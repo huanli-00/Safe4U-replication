@@ -1,0 +1,76 @@
+[
+  {
+    "description": "Rewrite the safety due to indirect references.",
+    "name": "add",
+    "src": [
+      "See [`.offset()`](Self::offset)."
+    ],
+    "dst": "`BitPtr` is implemented with Rust raw pointers internally, and is\nsubject to all of Rust\u2019s rules about provenance and permission tracking.\nYou must abide by the safety rules established in the original method,\nto which this internally delegates.\nAdditionally, `bitvec` imposes its own rules: while Rust cannot observe\nprovenance beyond an element or byte level, `bitvec` demands that\n`&mut BitSlice` have exclusive view over all bits it observes. You must\nnot produce a bit-pointer that departs a `BitSlice` region and intrudes\non any `&mut BitSlice`\u2019s handle, and you must not produce a\nwrite-capable bit-pointer that intrudes on a `&BitSlice` handle that\nexpects its contents to be immutable.\nNote that it is illegal to *construct* a bit-pointer that invalidates\nany of these rules. If you wish to defer safety-checking to the point of\ndereferencing, and allow the temporary construction *but not*\n*dereference* of illegal `BitPtr`s, use [`.wrapping_offset()`] instead."
+  },
+  {
+    "description": "Rewrite the safety due to indirect references.",
+    "name": "copy_to",
+    "src": [
+      "See [`ptr::copy`](crate::ptr::copy)."
+    ],
+    "dst": "In addition to the bit-ordering constraints, this inherits the restrictions of the original `ptr::copy`:\n\n- `self` must be valid to read the next count bits out of memory.\n- `dst` must be valid to write into the next count bits.\n- Both `self` and `dst` must satisfy `BitPtr`’s non-null, well-aligned, requirements."
+  },
+  {
+    "description": "Rewrite the safety due to indirect references.",
+    "name": "copy_to_nonoverlapping",
+    "src": [
+      "See [`ptr::copy_nonoverlapping`](crate::ptr::copy_nonoverlapping)."
+    ],
+    "dst": "In addition to the bit-ordering constraints, this inherits the restrictions of the original `ptr::copy_nonoverlapping`:\n\n- `self` must be valid to read the next `count` bits out of memory.\n- `dst` must be valid to write into the next `count` bits.\n- Both `self` and `dst` must satisfy `BitPtr`’s non-null, well-aligned, requirements."
+  },
+  {
+    "description": "Rewrite the safety due to indirect references.",
+    "name": "dealloc",
+    "src": [
+      "See [`GlobalAlloc::dealloc`](GlobalAlloc::dealloc)."
+    ],
+    "dst": "This function is unsafe because undefined behavior can result if the caller does not ensure all of the following:\n\nptr must denote a block of memory currently allocated via this allocator,\n\nlayout must be the same layout that was used to allocate that block of memory."
+  },
+  {
+    "description": "Rewrite the safety due to indirect references.",
+    "name": "replace",
+    "src": [
+      "See [`ptr::replace`].\n\n[`ptr::replace`]: crate::ptr::replace",
+      "See [`ptr::replace`].\n[`ptr::replace`]: crate::ptr::replace"
+    ],
+    "dst": "This has the same safety requirements as `ptr::read` and `ptr::write`, as it is required to use them in its implementation.\n\n- `self` must be valid to read and write.\n- `self` must be properly aligned. This is an invariant of the `BitPtr` type as well as of the memory access.\n- `self` must point to an initialized value of `T`."
+  },
+  {
+    "description": "Rewrite the safety due to indirect references.",
+    "name": "read",
+    "src": [
+      "See [`ptr::read`](crate::ptr::read)."
+    ],
+    "dst": "Because this performs a dereference of memory, it inherits the original `ptr::read`’s requirements:\n\n- `self` must be valid to read.\n- `self` must be properly aligned. This is an invariant of the `BitPtr` type as well as of the memory access.\n- `self` must point to an initialized value of `T`."
+  },
+  {
+    "description": "Rewrite the safety due to indirect references.",
+    "name": "read",
+    "src": [
+      "See [`ptr::read`] for safety concerns and examples."
+    ],
+    "dst": "## Safety\nBecause this performs a dereference of memory, it inherits the original `ptr::read`’s requirements:\n\n- `self` must be valid to read.\n- `self` must be properly aligned. This is an invariant of the `BitPtr` type as well as of the memory access.\n- `self` must point to an initialized value of `T`."
+  },
+  {
+    "description": "Rewrite the safety due to indirect references.",
+    "name": "write",
+    "src": [
+      "See [`ptr::write`].\n[`ptr::write`]: crate::ptr::write",
+      "See [`ptr::write`].\n\n[`ptr::write`]: crate::ptr::write"
+    ],
+    "dst": "Because this performs a dereference of memory, it inherits the original `ptr::write`’s requirements:\n\n- `self` must be valid to write\n- `self` must be properly aligned. This is an invariant of the `BitPtr` type as well as of the memory access.\n- Additionally, `self` must point to an initialized value of `T`. Integers cannot be initialized one bit at a time."
+  },
+  {
+    "description": "Rewrite the safety due to indirect references.",
+    "name": "read_unaligned",
+    "src": [
+      "See [`ptr::read_unaligned`] for safety concerns and examples."
+    ],
+    "dst": "## Safety\nBehavior is undefined if any of the following conditions are violated:\n\n- `self` must be valid for reads.\n- `self` must point to a properly initialized value of type `T`.\n\nLike `read`, `read_unaligned` creates a bitwise copy of `T`, regardless of whether `T` is `Copy`. If `T` is not `Copy`, using both the returned value and the value at `self` can violate memory safety.\n\nNote that even if `T` has size 0, the pointer must be non-null."
+  }
+]

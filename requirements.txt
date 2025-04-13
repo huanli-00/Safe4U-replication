@@ -1,0 +1,14 @@
+openai
+scipy
+tenacity
+requests
+pygls
+GitPython
+notebook
+tree_sitter==0.21.3
+pandas
+numpy
+fake-useragent
+matplotlib
+tiktoken
+vllm

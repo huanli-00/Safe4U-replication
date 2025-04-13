@@ -1,0 +1,12 @@
+[target]
+# absolute pathes are more recommended
+function_locate = "start_line" # optional
+item_root_path = "path_dir_for_functions" # e.g., "data/risky_func"
+repo_root_path = "root_dir_for_repositories" # e.g., "data/crates_repo"
+result_root_path = "root_dir_for_retrieve_result" # e.g., "data/detailed_risky_func"
+
+[risky]
+function_locate = "start_line"
+item_root_path = "data/risky_func"
+repo_root_path = "data/crates_repo"
+result_root_path = "data/detailed_risky_func"

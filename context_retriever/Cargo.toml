@@ -1,0 +1,29 @@
+[package]
+name = "rust_fn_extender"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[build-dependencies]
+cc="*"
+
+[dependencies]
+ra_ap_ide = "0.0.216"
+ra_ap_vfs = "0.0.216"
+ra_ap_project_model = "0.0.216"
+ra_ap_paths = "0.0.216"
+ra_ap_load-cargo = "0.0.216"
+ra_ap_hir = "0.0.216"
+ra_ap_ide_db = "0.0.216"
+ra_ap_text_edit = "0.0.216"
+log = "0.4.21"
+anyhow = "1.0"
+build-target = "0.4.0"
+proc-macro2 = {version="1.0", features = ["span-locations"]}
+env_logger = "0.11.1"
+serde_json = "1.0"
+serde = "1.0"
+tree-sitter = "0.20.10"
+tree-sitter-rust = "0.20.4"
+config = {version="0.14.0", features = ["toml"]}
