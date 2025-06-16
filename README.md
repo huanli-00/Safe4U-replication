@@ -31,6 +31,8 @@ The replication package for paper "Safe4U: Identifying Unsound Safe Encapsulatio
 - 📄 result_viewer.ipynb
 - 📄 unsound_functions.md: unsound functions found by Safe4U
 
+> `data` and `result` are available in [`replication`](./replication/).
+
 ## Evaluation
 
 The procedure of Safe4U is separated into several steps:
@@ -60,7 +62,7 @@ The target information are written in `config.toml` with following options:
 
 ```toml
 [target]
-function_locate = "start_line"   <- optional
+function_locate = "start_line"                     # optional
 item_root_path = "/root/dir/for/candidate_info"    # e.g., "data/risky_func"
 repo_root_path = "/root/dir/for/repositories"      # e.g., "data/crates_repo"
 result_root_path = "/root/dir/for/retrieve_result" # e.g., "data/detailed_risky_func"

@@ -3,6 +3,7 @@ data/
 processed/
 result/
 embeddings/
+context_retriever/target/
 **bak/
 
 # log and history
