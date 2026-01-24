@@ -14,7 +14,7 @@ log/
 **DS_Store
 
 # config
-**_private**
+*_private**
 .vscode/launch.json
 .idea
 .settings
