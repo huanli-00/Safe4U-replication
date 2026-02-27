@@ -1,0 +1,121 @@
+#!/usr/bin/env python3
+import argparse
+import json
+import logging
+import os
+import sys
+
+from utils.file_utils import dir_check, safe_open
+
+
+def load_prompt_info(prompt_name: str) -> dict:
+    prompt_file = os.path.join("prompt", f"{prompt_name}.json")
+    if not os.path.exists(prompt_file):
+        raise FileNotFoundError(f"Prompt file not found: {prompt_file}")
+    with open(prompt_file, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def summarize_results(results: list) -> dict:
+    summary = {"sound": 0, "unsound": 0, "unknown": 0}
+    for item in results:
+        summary[item["result"]] = summary.get(item["result"], 0) + 1
+    return summary
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Scan a Rust crate with Safe4U (non-batch OpenAI).")
+    parser.add_argument("--crate", required=True, help="Path to the target crate/workspace root.")
+    parser.add_argument("--model", required=True, help="OpenAI model name, e.g. gpt-4o-mini.")
+    parser.add_argument("--prompt", default="Safe4U", help="Prompt name in ./prompt (default: Safe4U).")
+    parser.add_argument("--repo-name", default="", help="Override repo name (default: folder name of crate).")
+    parser.add_argument("--out-dir", default="", help="Output directory (default: result/scan/<repo>).")
+    parser.add_argument("--limit", type=int, default=None, help="Limit number of candidate functions.")
+    parser.add_argument("--include-tests", action="store_true", help="Include tests/benches/examples.")
+    parser.add_argument("--force-context", action="store_true", help="Force re-run context retriever.")
+    parser.add_argument("--force-decompose", action="store_true", help="Force re-run safety decomposition.")
+    args = parser.parse_args()
+
+    from utils.LLM_utils import ChatModel
+    from utils.scan_utils import (
+        InteractiveEvaluator,
+        add_constraints,
+        extract_candidates,
+        make_decomposer,
+        run_context_retriever,
+    )
+
+    if not os.environ.get("OPENAI_API_KEY"):
+        logging.error("Missing OPENAI_API_KEY for OpenAI SDK.")
+        return 2
+    if not os.environ.get("OPENAI_KEY"):
+        os.environ["OPENAI_KEY"] = os.environ.get("OPENAI_API_KEY", "")
+
+    crate_root = os.path.abspath(args.crate)
+    if not os.path.isdir(crate_root):
+        logging.error("Crate path does not exist: %s", crate_root)
+        return 2
+
+    repo_name = args.repo_name.strip() or os.path.basename(os.path.normpath(crate_root))
+    out_dir = args.out_dir.strip() or os.path.join("result", "scan", repo_name)
+    items_dir = os.path.join(out_dir, "items")
+    context_dir = os.path.join(out_dir, "context")
+    dir_check(items_dir)
+    dir_check(context_dir)
+
+    prompt_info = load_prompt_info(args.prompt)
+    decompose_prompt = prompt_info.get("split_safety_prompt", "decompose_with_self_check")
+
+    logging.info("Extracting candidates from %s", crate_root)
+    candidates = extract_candidates(crate_root, include_tests=args.include_tests, limit=args.limit)
+    if len(candidates) == 0:
+        logging.warning("No candidate functions found.")
+        return 0
+    candidate_file = os.path.join(items_dir, f"{repo_name}.json")
+    json.dump(candidates, safe_open(candidate_file, "w"), indent=2)
+
+    context_file = os.path.join(context_dir, f"{repo_name}.json")
+    if args.force_context or not os.path.exists(context_file):
+        repo_root_path = os.path.dirname(crate_root)
+        logging.info("Running context retriever.")
+        run_context_retriever(
+            repo_root_path=os.path.abspath(repo_root_path),
+            repo_name=repo_name,
+            item_root_path=os.path.abspath(items_dir),
+            result_root_path=os.path.abspath(context_dir),
+            target="scan",
+        )
+    else:
+        logging.info("Using cached context: %s", context_file)
+
+    with open(context_file, "r", encoding="utf-8") as f:
+        samples = json.load(f)
+
+    chatbot = ChatModel(args.model)
+    decomposer = make_decomposer(chatbot, decompose_prompt)
+    constraints_file = os.path.join(out_dir, "samples_with_constraints.json")
+    if args.force_decompose or not os.path.exists(constraints_file):
+        logging.info("Decomposing safety sections with prompt: %s", decompose_prompt)
+        samples = add_constraints(samples, decomposer)
+        json.dump(samples, safe_open(constraints_file, "w"), indent=2)
+    else:
+        logging.info("Using cached constraints: %s", constraints_file)
+        with open(constraints_file, "r", encoding="utf-8") as f:
+            samples = json.load(f)
+
+    evaluator = InteractiveEvaluator(prompt_info, chatbot)
+    results = evaluator.evaluate_samples(samples)
+    result_file = os.path.join(out_dir, "results.json")
+    json.dump(results, safe_open(result_file, "w"), indent=2)
+
+    summary = summarize_results(results)
+    logging.info("Finished. Results saved to %s", result_file)
+    logging.info("Summary: %s", summary)
+    return 0
+
+
+if __name__ == "__main__":
+    logging.basicConfig(
+        format="%(asctime)s %(name)-12s %(levelname)-8s %(message)s", level=logging.INFO
+    )
+    sys.exit(main())

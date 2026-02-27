@@ -5,7 +5,16 @@
 > The default `master` branch remains the replication package for the Safe4U paper.
 > Replication focuses on batch processing for lower cost, while this branch uses OpenAI-compatible non-batch calls for lower latency.
 
-The replication package for paper "Safe4U: Identifying Unsound Safe Encapsulations of Unsafe Calls in Rust using LLMs".
+A practical CLI workflow is provided for scanning a Rust crate with OpenAI models.
+
+## Quick Start (Direct Use)
+
+1. Install dependencies: `pip install -r requirements.txt`
+2. Export your API key: `export OPENAI_API_KEY=...`
+3. Run Safe4U on a crate:
+   `./cargo-safe4u --crate /path/to/crate --model gpt-4o-mini`
+
+Outputs are written to `result/scan/<repo-name>/`.
 
 ## Content
 
@@ -26,6 +35,7 @@ The replication package for paper "Safe4U: Identifying Unsound Safe Encapsulatio
   - 📄 Safe4U-xxx.json: variant that ablating some components
 - 📁 result: the detailed results of evaluation, group by [MODEL/SETTINGS]
 - 📁 utils: the utility python code
+- 📄 cargo-safe4u: user-facing script to scan one Rust crate directly
 - 📄 crawl_crates_and_extract_candidates.ipynb
 - 📄 sample_check.ipynb
 - 📄 decompose_safety_and_classify.py
