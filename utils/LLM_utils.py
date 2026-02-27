@@ -112,8 +112,13 @@ class ChatModel:
 
 class EmbeddingModel:
     def __init__(self, model="text-embedding-3-small"):
-        if model.startswith("text-embedding-"):
+        embd_url = os.environ.get("EMBEDDING_URL")
+        if embd_url is None:
             self.client = openai.OpenAI(api_key=os.environ.get("OPENAI_KEY"))
+            self.model = model
+        else:
+            # setup other OPENAI-compatible embedding model
+            self.client = openai.OpenAI(base_url=embd_url, api_key=os.environ.get("EMBEDDING_KEY"))
             self.model = model
 
     def get_embeddings(self, list_of_text: List[str]) -> List[List[float]]:

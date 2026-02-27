@@ -1,5 +1,10 @@
 # Safe4U
 
+> [!IMPORTANT]
+> This `direct-use` branch is for running Safe4U as a tool via `cargo-safe4u`.
+> The default `master` branch remains the replication package for the Safe4U paper.
+> Replication focuses on batch processing for lower cost, while this branch uses OpenAI-compatible non-batch calls for lower latency.
+
 The replication package for paper "Safe4U: Identifying Unsound Safe Encapsulations of Unsafe Calls in Rust using LLMs".
 
 ## Content
@@ -74,6 +79,8 @@ Then, merge and filter the result using [`sample_check.ipynb`](./sample_check.ip
 ### Decompose Safety
 
 Both OpenAI API and local models are supported in this part.
+
+Note that the embedding model should still be setup (supports any OpenAI-compatible provider by config env `EMBEDDING_URL` and `EMBEDDING_KEY`).
 
 Run `decompose_safety_and_classify.py` with following options:
 
