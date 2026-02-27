@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import sys
+from typing import Optional
 
 from utils.file_utils import dir_check, safe_open
 
@@ -23,10 +24,63 @@ def summarize_results(results: list) -> dict:
     return summary
 
 
+class OpenAICompatibleChatModel:
+    def __init__(
+        self,
+        model: str,
+        base_url: str = "",
+        api_key: str = "",
+        temperature: float = 0.0,
+        seed: int = 2024,
+    ):
+        from openai import OpenAI
+
+        client_kwargs = {}
+        if len(base_url) > 0:
+            client_kwargs["base_url"] = base_url
+        if len(api_key) > 0:
+            client_kwargs["api_key"] = api_key
+        elif len(base_url) > 0:
+            # Local OpenAI-compatible servers commonly ignore keys but SDK expects one.
+            client_kwargs["api_key"] = "EMPTY"
+        self.client = OpenAI(**client_kwargs)
+        self.model = model
+        self.temperature = temperature
+        self.seed = seed
+
+    def send_messages(
+        self,
+        messages: list[dict],
+        temperature: Optional[float] = None,
+        seed: Optional[int] = None,
+        max_tokens: int = 1536,
+    ) -> str:
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            temperature=self.temperature if temperature is None else temperature,
+            seed=self.seed if seed is None else seed,
+            max_tokens=max_tokens,
+        )
+        return response.choices[0].message.content or ""
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Scan a Rust crate with Safe4U (non-batch OpenAI).")
+    parser = argparse.ArgumentParser(
+        description="Scan a Rust crate with Safe4U via OpenAI-compatible Chat Completions (non-batch)."
+    )
     parser.add_argument("--crate", required=True, help="Path to the target crate/workspace root.")
-    parser.add_argument("--model", required=True, help="OpenAI model name, e.g. gpt-4o-mini.")
+    parser.add_argument("--model", required=True, help="OpenAI-compatible model ID, e.g. gpt-4o-mini.")
+    parser.add_argument(
+        "--base-url",
+        default=os.environ.get("OPENAI_BASE_URL", ""),
+        help="OpenAI-compatible base URL, e.g. http://127.0.0.1:8000/v1 (default: OPENAI_BASE_URL).",
+    )
+    parser.add_argument(
+        "--api-key",
+        default=os.environ.get("OPENAI_API_KEY", ""),
+        help="API key for OpenAI-compatible endpoint (default: OPENAI_API_KEY).",
+    )
     parser.add_argument("--prompt", default="Safe4U", help="Prompt name in ./prompt (default: Safe4U).")
     parser.add_argument("--repo-name", default="", help="Override repo name (default: folder name of crate).")
     parser.add_argument("--out-dir", default="", help="Output directory (default: result/scan/<repo>).")
@@ -36,7 +90,6 @@ def main() -> int:
     parser.add_argument("--force-decompose", action="store_true", help="Force re-run safety decomposition.")
     args = parser.parse_args()
 
-    from utils.LLM_utils import ChatModel
     from utils.scan_utils import (
         InteractiveEvaluator,
         add_constraints,
@@ -45,11 +98,14 @@ def main() -> int:
         run_context_retriever,
     )
 
-    if not os.environ.get("OPENAI_API_KEY"):
-        logging.error("Missing OPENAI_API_KEY for OpenAI SDK.")
+    api_key = args.api_key.strip() or os.environ.get("OPENAI_KEY", "").strip()
+    base_url = args.base_url.strip()
+    if len(api_key) == 0 and len(base_url) == 0:
+        logging.error("Missing API key. Set OPENAI_API_KEY/--api-key or provide --base-url for local compatible API.")
         return 2
-    if not os.environ.get("OPENAI_KEY"):
-        os.environ["OPENAI_KEY"] = os.environ.get("OPENAI_API_KEY", "")
+    # Embedding-based example selection reads OPENAI_KEY from env.
+    if len(api_key) > 0:
+        os.environ["OPENAI_KEY"] = api_key
 
     crate_root = os.path.abspath(args.crate)
     if not os.path.isdir(crate_root):
@@ -91,7 +147,7 @@ def main() -> int:
     with open(context_file, "r", encoding="utf-8") as f:
         samples = json.load(f)
 
-    chatbot = ChatModel(args.model)
+    chatbot = OpenAICompatibleChatModel(args.model, base_url=base_url, api_key=api_key)
     decomposer = make_decomposer(chatbot, decompose_prompt)
     constraints_file = os.path.join(out_dir, "samples_with_constraints.json")
     if args.force_decompose or not os.path.exists(constraints_file):

@@ -13,6 +13,8 @@ A practical CLI workflow is provided for scanning a Rust crate with OpenAI model
 2. Export your API key: `export OPENAI_API_KEY=...`
 3. Run Safe4U on a crate:
    `./cargo-safe4u --crate /path/to/crate --model gpt-4o-mini`
+4. (Optional) Use an OpenAI-compatible endpoint:
+   `./cargo-safe4u --crate /path/to/crate --model your-model --base-url http://127.0.0.1:8000/v1 --api-key EMPTY`
 
 Outputs are written to `result/scan/<repo-name>/`.
 
