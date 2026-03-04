@@ -12,10 +12,7 @@ def safe_open(file_path, mode: str = "r", encoding="utf-8"):
 
 
 def dir_check(dir_path):
-    if not os.path.isdir(dir_path):
-        dir_check(os.path.dirname(dir_path))
-        logging.warning(f"{dir_path} not found, an empty dir created.")
-        os.makedirs(dir_path)
+    os.makedirs(dir_path, exist_ok=True)
 
 
 def copy_to(file, dst_dir):

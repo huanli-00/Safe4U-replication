@@ -318,7 +318,7 @@ if __name__ == "__main__":
         "--prompt",
         type=str,
         help="Prompt name",
-        default="decompose_safety_and_classify",
+        default="decompose_with_self_check",
     )
     parser.add_argument(
         "--model",
