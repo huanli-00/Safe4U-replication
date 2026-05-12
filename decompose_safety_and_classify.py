@@ -12,14 +12,12 @@ import utils.LLM_utils as llm
 import utils.sample_utils as su
 import utils.parser_utils as pu
 from utils.file_utils import safe_open, dir_check
-import argparse
 
-split_dir = "result/split_safety"
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+split_dir = os.path.join(PROJECT_ROOT, "result", "split_safety")
 dir_check(split_dir)
-prompt_dir = "prompt/"
-example_dir = "examples/"
-sample_data_dir = "data/checked/"
-result_root = "data/samples/"
+prompt_dir = os.path.join(PROJECT_ROOT, "prompt")
+example_dir = os.path.join(PROJECT_ROOT, "examples")
 
 
 def construct_fn_context(unsafe_fn: dict, self_info: dict = None) -> str:
@@ -183,7 +181,7 @@ class Decomposer:
             self.refiner = Refiner(chatbot, critique_prompt, refine_prompt, round_limit)
 
     def _history_fn_file(self, unsafe_fn_name: str) -> str:
-        return os.path.join(split_dir, chatbot.model_name, self.prompt, f"{unsafe_fn_name}.json")
+        return os.path.join(split_dir, self.chatbot.model_name, self.prompt, f"{unsafe_fn_name}.json")
 
     def _decompose_with_llm(self, unsafe_fn: dict, self_info: dict = None):
         messages = self.messages.copy()
@@ -299,51 +297,3 @@ def fine_grained_questions_of_sample(decomposer: Decomposer, sample_raw: dict):
             q["fn_name"] = unsafe_fn["name"]
         sample_constraints.extend(questions)
     return sample_constraints
-
-
-def add_fine_grained_constraints_to_samples(
-    decomposer: Decomposer,
-    sample_data_file: str,
-    result_file: str,
-):
-    samples = json.load(open(sample_data_file, "r"))
-    for idx, sample_raw in enumerate(samples):
-        samples[idx]["constraints"] = fine_grained_questions_of_sample(decomposer, sample_raw)
-    json.dump(samples, safe_open(result_file, "w"), indent=2)
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Batch Analyzer")
-    parser.add_argument(
-        "--prompt",
-        type=str,
-        help="Prompt name",
-        default="decompose_with_self_check",
-    )
-    parser.add_argument(
-        "--model",
-        type=str,
-        help="Model name(OpenAI) or path(Local Models)",
-        required=True,
-    )
-    parser.add_argument(
-        "--target",
-        nargs="+",
-        type=str,
-        help="Sample target (risky, filtered_unsafe, 11cve, scan)",
-        required=True,
-    )
-    parser.add_argument("--device", type=int, help="CUDA device number", default=0)
-    args = parser.parse_args()
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(args.device)
-    chatbot = llm.ChatModel(model=args.model)
-    decomposer = Decomposer(chatbot, args.prompt)
-    for target in args.target:
-        print(f"Processing '{target}' with PROMPT - {args.prompt} and MODEL - {args.model} in DEVICE - {args.device}")
-        result_dir = os.path.join(result_root, chatbot.model_name, args.prompt)
-        dir_check(result_dir)
-        add_fine_grained_constraints_to_samples(
-            decomposer,
-            os.path.join(sample_data_dir, f"{target}.json"),
-            os.path.join(result_dir, f"{target}_fine_grained.json"),
-        )

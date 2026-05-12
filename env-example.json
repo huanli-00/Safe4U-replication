@@ -1,0 +1,12 @@
+{
+  "model": "gpt-4o-mini",
+  "base_url": "",
+  "api_key": "YOUR_API_KEY",
+  "embedding_model": "text-embedding-3-small",
+  "embedding_url": "",
+  "embedding_key": "",
+  "request_timeout": 120,
+  "max_tokens": 4096,
+  "thinking": "",
+  "extra_body": {}
+}

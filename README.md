@@ -1,130 +1,182 @@
+<p align="center">
+  <img src="misc/icon.svg" alt="Safe4U logo" width="180">
+</p>
+
 # Safe4U
 
-> [!IMPORTANT]
-> This `direct-use` branch is for running Safe4U as a tool via `cargo-safe4u`.
-> The default `master` branch remains the replication package for the Safe4U paper.
-> Replication focuses on batch processing for lower cost, while this branch uses OpenAI-compatible non-batch calls for lower latency.
+Safe4U is a command-line assistant for auditing Rust crates that use `unsafe`.
+It scans a crate, finds safe functions that encapsulate unsafe operations,
+retrieves local Rust context, decomposes referenced `# Safety` documentation
+into concrete obligations, and asks an OpenAI-compatible model whether the
+wrapper actually upholds those obligations.
 
-A practical CLI workflow is provided for scanning a Rust crate with OpenAI models.
+The current branch is focused on direct, user-friendly crate scanning through
+`cargo-safe4u`.
 
-## Quick Start (Direct Use)
+## Overview
 
-1. Install dependencies: `pip install -r requirements.txt`
-2. Export your API key: `export OPENAI_API_KEY=...`
-3. Run Safe4U on a crate:
-   `./cargo-safe4u --crate /path/to/crate --model gpt-4o-mini`
-4. (Optional) Use an OpenAI-compatible endpoint:
-   `./cargo-safe4u --crate /path/to/crate --model your-model --base-url http://127.0.0.1:8000/v1 --api-key EMPTY`
+<p align="center">
+  <img src="misc/framework.svg" alt="Safe4U framework" width="900">
+</p>
 
-Outputs are written to `result/scan/<repo-name>/`.
+Safe4U combines static Rust context retrieval with model-based safety-contract
+checking. The goal is to make unsafe-wrapper review easier to run on a real
+crate and easier to triage from the terminal.
 
-## Content
+## What It Reports
 
-- 📁 context_retriever: the Rust program that retrieve context of target functions.
-- 📁 data: the detailed data
-  - 📁 checked: filtered functions to be checked
-  - 📁 crate_meta: some meta information of `crates.io`
-  - 📁 manual: some data with manual review
-  - 📁 samples: functions with fine-grained contracts to be finally checked
-- 📁 examples
-  - 📄 decompose_and_classify.json: demonstrations for `decomposion & classification` step
-  - 📄 document_rewrite.json: rewrite the safety sections that use hyperlink.
-  - 📄 examples_for_all_guarantee_patterns.json: examples for `pattern-oriented checks`, including pattern-examples and counter-examples.
-- 📁 prompt: prompt and parameter settings
-  - 📄 decompose_xxx.json: decomposion & classification
-  - 📄 basic_check.json: baseline
-  - 📄 Safe4U.json: the complete Safe4U
-  - 📄 Safe4U-xxx.json: variant that ablating some components
-- 📁 result: the detailed results of evaluation, group by [MODEL/SETTINGS]
-- 📁 utils: the utility python code
-- 📄 cargo-safe4u: user-facing script to scan one Rust crate directly
-- 📄 crawl_crates_and_extract_candidates.ipynb
-- 📄 sample_check.ipynb
-- 📄 decompose_safety_and_classify.py
-- 📄 decompose_safety_of_referenced_api.ipynb
-- 📄 batch_eval_openai.ipynb
-- 📄 batch_eval_vllm.py
-- 📄 evaluation_scripts.sh
-- 📄 result_viewer.ipynb
-- 📄 unsound_functions.md: unsound functions found by Safe4U
+Safe4U looks for potential unsound encapsulations: safe Rust APIs whose internal
+`unsafe` calls may violate the safety contracts of the unsafe functions they use.
 
-> `data` and `result` are available in [`replication`](./replication/).
+During a scan, the CLI shows:
 
-## Evaluation
+- Progress for candidate extraction, context retrieval, safety decomposition,
+  and final evaluation.
+- Immediate findings when an unsound encapsulation is detected.
+- A final summary of `sound`, `unsound`, and `unknown` results.
+- Machine-readable JSON outputs under `result/scan/<repo-name>/`.
 
-The procedure of Safe4U is separated into several steps:
+## Quick Start
 
-1. Crawl crates & extract candidate functions with unsafe blocks ([scripts](./crawl_crates_and_extract_candidates.ipynb))
-2. Retrieve context with program in `context_retriever`
-3. Check and filter the candidate functions according to the context ([scripts](./sample_check.ipynb))
-4. Decompose the Safety section into fine-grained classified contracts
-5. Check the function by check whether all contracts are guaranteed
+Install dependencies in the environment you use for Safe4U:
 
-All scripts involved in the paper is displayed in `evaluation_scripts.sh`
-
-### Prerequisite
-
-- OS: Linux, e.g., Ubuntu, Debian.
-- Environment:
-  - python: `python==3.10`
-  - python environment: `pip install -r requirements.txt`
-  - Rust environment: latest stable tool-chain
-- LLM:
-  - Using API: OpenAI API key
-  - Using local LLM: [vllm](https://docs.vllm.ai/en/latest/getting_started/installation.html) & [open-source LLMs from HuggingFace](https://huggingface.co/models?other=text-generation-inference&sort=trending) (& GPU & CUDA)
-
-### Retrieve Context
-
-The target information are written in `config.toml` with following options:
-
-```toml
-[target]
-function_locate = "start_line"                     # optional
-item_root_path = "/root/dir/for/candidate_info"    # e.g., "data/risky_func"
-repo_root_path = "/root/dir/for/repositories"      # e.g., "data/crates_repo"
-result_root_path = "/root/dir/for/retrieve_result" # e.g., "data/detailed_risky_func"
+```bash
+conda activate unsafe
+pip install -r requirements.txt
 ```
 
-Run the program with `cargo run target`.
-Then, merge and filter the result using [`sample_check.ipynb`](./sample_check.ipynb)
+Set an API key and run a scan:
 
-### Decompose Safety
-
-Both OpenAI API and local models are supported in this part.
-
-Note that the embedding model should still be setup (supports any OpenAI-compatible provider by config env `EMBEDDING_URL` and `EMBEDDING_KEY`).
-
-Run `decompose_safety_and_classify.py` with following options:
-
-```plain
---prompt PROMPT
-    Prompt name (e.g., decompose_with_self_check)
---model MODEL
-    Model name(OpenAI) or path(Local Models)
---target TARGET [TARGET ...]
-    Sample target (risky, filtered_unsafe, 11cve, scan)
---device DEVICE
-    CUDA device number
+```bash
+cp env-example.json env.json
+# Edit env.json and set api_key/model/base_url as needed.
+./cargo-safe4u --crate /path/to/rust/crate
 ```
 
-### Evaluate with GPT
+If you prefer not to activate the environment, run through conda directly:
 
-We use the `Batch` API provided by OpenAI to get 50% discount.
-The detailed introduction can be seen in [`batch_eval_openai.ipynb`](./batch_eval_openai.ipynb)
-
-### Evaluate with Local LLM
-
-Similarly, we implement the evaluation with batch to accelerate to calculation speed.
-
-Run `python batch_eval_vllm.py` with following options:
-
-```plain
---prompt [PROMPT ...]
-    Prompt name (e.g., Safe4U, basic_check)
---model MODEL
-    Model name or path (e.g., Meta-Llama-3.1-8B-Instruct)
---target TARGET [TARGET ...]
-    Sample target (e.g., risky, filtered_unsafe, 11cve)
---device DEVICE
-    CUDA device number (e.g., 0, 1)
+```bash
+conda run -n unsafe ./cargo-safe4u --crate /path/to/rust/crate
 ```
+
+Outputs are written to:
+
+```text
+result/scan/<repo-name>/
+```
+
+`env.json` is intentionally ignored by git. Keep private API keys there and use
+`env-example.json` as the committed template. Any missing field falls back to
+Safe4U's default value.
+
+## OpenAI-Compatible Endpoints
+
+Safe4U works with OpenAI-compatible Chat Completions APIs, including local
+servers such as vLLM. Configure the endpoint in `env.json`:
+
+```json
+{
+  "model": "your-model",
+  "base_url": "http://127.0.0.1:8000/v1",
+  "api_key": "EMPTY",
+  "embedding_model": "text-embedding-3-small",
+  "embedding_url": "",
+  "embedding_key": ""
+}
+```
+
+For prompts that use embedding-based examples, configure embeddings in the same
+file. Unset fields use Safe4U defaults:
+
+```json
+{
+  "embedding_model": "text-embedding-3-small",
+  "embedding_url": "http://127.0.0.1:8001/v1",
+  "embedding_key": "EMPTY"
+}
+```
+
+## Common Options
+
+```text
+--crate PATH             Rust crate or workspace root to scan
+--prompt NAME            Prompt config from ./prompt, defaults to Safe4U
+--repo-name NAME         Override output repo name
+--out-dir PATH           Override output directory
+--limit N                Scan only the first N candidate functions
+--include-tests          Include tests, benches, and examples
+--force-context          Rebuild retrieved Rust context
+--force-decompose        Re-run safety decomposition
+--reuse-results          Show cached results.json without calling the model
+--no-color               Disable colored terminal output
+```
+
+Example for a quick smoke run:
+
+```bash
+conda run -n unsafe ./cargo-safe4u \
+  --crate /path/to/rust/crate \
+  --limit 5
+```
+
+For repeated demos on a crate that already has cached artifacts, run the same
+command again. Safe4U reuses candidate, context, and decomposition caches by
+default:
+
+```bash
+conda run -n unsafe ./cargo-safe4u \
+  --crate /path/to/rust/crate
+```
+
+To show the cached final report immediately without calling the model again:
+
+```bash
+conda run -n unsafe ./cargo-safe4u \
+  --crate /path/to/rust/crate \
+  --reuse-results
+```
+
+## Reading Results
+
+The terminal output is the fastest way to review a run: it highlights immediate
+unsound findings and ends with a compact summary. Full JSON artifacts are saved
+under `result/scan/<repo-name>/` for later inspection or scripting.
+
+In the final results, each checked item contains:
+
+- `sample_label`: the scanned function.
+- `result`: `sound`, `unsound`, or `unknown`.
+- `response`: per-obligation model judgments and explanations.
+
+## How Safe4U Works
+
+1. Candidate extraction finds safe Rust functions containing `unsafe` blocks.
+2. The Rust context retriever resolves surrounding type, trait, function, and
+   documentation context.
+3. Safety decomposition turns unsafe callee documentation into fine-grained
+   obligations.
+4. Evaluation checks whether the safe wrapper guarantees each obligation.
+5. Results are summarized and saved for review.
+
+## Requirements
+
+- Linux environment, tested on Ubuntu-like systems.
+- Python 3.10.
+- Rust toolchain available on `PATH`.
+- Python packages from `requirements.txt`.
+- An OpenAI-compatible chat model endpoint.
+
+For local LLM serving, vLLM or another OpenAI-compatible server can be used.
+
+## Notes
+
+Safe4U is an assistant for security review, not a formal verifier. Treat
+`unsound` findings as high-priority review targets and inspect the referenced
+contracts and source code. Treat `unknown` results as places where the model did
+not have enough confidence to make a definitive judgment.
+
+This `direct-use` branch is for running Safe4U as a practical tool through
+`cargo-safe4u`. The default `master` branch remains the replication package for
+the Safe4U paper. The replication workflow focuses on batch processing for lower
+cost, while this branch uses OpenAI-compatible non-batch calls for lower
+latency and a more interactive CLI experience.

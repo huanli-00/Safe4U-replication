@@ -4,13 +4,15 @@ import json
 import logging
 import os
 import sys
+import time
 from typing import Optional
 
+from utils.config_utils import PROJECT_ROOT, apply_prompt_config, chat_extra_body, load_env_config
 from utils.file_utils import dir_check, safe_open
 
 
 def load_prompt_info(prompt_name: str) -> dict:
-    prompt_file = os.path.join("prompt", f"{prompt_name}.json")
+    prompt_file = os.path.join(PROJECT_ROOT, "prompt", f"{prompt_name}.json")
     if not os.path.exists(prompt_file):
         raise FileNotFoundError(f"Prompt file not found: {prompt_file}")
     with open(prompt_file, "r", encoding="utf-8") as f:
@@ -24,6 +26,132 @@ def summarize_results(results: list) -> dict:
     return summary
 
 
+class Console:
+    COLORS = {
+        "bold": "\033[1m",
+        "dim": "\033[2m",
+        "red": "\033[31m",
+        "green": "\033[32m",
+        "yellow": "\033[33m",
+        "blue": "\033[34m",
+        "cyan": "\033[36m",
+        "reset": "\033[0m",
+    }
+
+    def __init__(self, no_color: bool = False):
+        self.stream = sys.stderr
+        self.use_color = self.stream.isatty() and not no_color and "NO_COLOR" not in os.environ
+        self.interactive = self.stream.isatty()
+
+    def style(self, text: str, *styles: str) -> str:
+        if not self.use_color:
+            return text
+        return "".join(self.COLORS[style] for style in styles) + text + self.COLORS["reset"]
+
+    def line(self, message: str = "") -> None:
+        print(message, file=self.stream)
+
+    def section(self, title: str) -> None:
+        self.line()
+        self.line(f"{self.style('▸', 'cyan')} {self.style(title, 'bold')}")
+
+    def info(self, message: str) -> None:
+        self.line(f"{self.style('•', 'blue')} {message}")
+
+    def success(self, message: str) -> None:
+        self.line(f"{self.style('✓', 'green')} {message}")
+
+    def warn(self, message: str) -> None:
+        self.line(f"{self.style('!', 'yellow')} {message}")
+
+    def error(self, message: str) -> None:
+        self.line(f"{self.style('✗', 'red')} {message}")
+
+    def progress(self, label: str, current: int, total: int, detail: str = "", done: bool = False) -> None:
+        total = max(total, 1)
+        current = min(current, total)
+        percent = current / total
+        width = 24
+        filled = int(width * percent)
+        bar = "█" * filled + "░" * (width - filled)
+        suffix = f" {detail}" if detail else ""
+        message = f"{self.style('↻', 'cyan')} {label} [{bar}] {current}/{total} {percent:>5.0%}{suffix}"
+        if self.interactive:
+            self.stream.write("\r" + message[:160])
+            if done:
+                self.stream.write("\n")
+            self.stream.flush()
+            return
+        if done or total <= 20 or current == 1 or current == total or current % 10 == 0:
+            self.line(message)
+
+    def finding(self, finding: dict) -> None:
+        question = finding.get("question", {})
+        content = question.get("content", "") if isinstance(question, dict) else str(question)
+        fn_name = question.get("fn_name", "") if isinstance(question, dict) else ""
+        q_type = question.get("type", "") if isinstance(question, dict) else ""
+        self.line()
+        self.line(self.style("✗ Unsound encapsulation detected", "red", "bold"))
+        self.line(f"  sample: {finding.get('sample_label', 'unknown')}")
+        if fn_name:
+            self.line(f"  unsafe callee: {fn_name}")
+        if q_type:
+            self.line(f"  contract type: {q_type}")
+        if content:
+            self.line(f"  violated contract: {truncate_one_line(content, 180)}")
+
+
+def truncate_one_line(text: str, limit: int = 120) -> str:
+    text = " ".join(str(text).split())
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
+def failed_questions(result: dict) -> list:
+    failures = []
+    for response in result.get("response", []):
+        if response.get("result") == "No":
+            failures.append(response.get("question", ""))
+    return failures
+
+
+def print_summary(console: Console, summary: dict, result_file: str, unsound_results: list, elapsed: float) -> None:
+    total = sum(summary.values())
+    console.section("Summary")
+    console.line(
+        "  "
+        + " | ".join(
+            [
+                console.style(f"sound {summary.get('sound', 0)}", "green"),
+                console.style(f"unsound {summary.get('unsound', 0)}", "red"),
+                console.style(f"unknown {summary.get('unknown', 0)}", "yellow"),
+                f"total {total}",
+            ]
+        )
+    )
+    console.info(f"Results saved to {result_file}")
+    console.info(f"Elapsed: {elapsed:.1f}s")
+    if not unsound_results:
+        console.success("No unsound encapsulations detected.")
+        return
+    console.line()
+    console.line(console.style("Unsound encapsulations:", "red", "bold"))
+    for idx, result in enumerate(unsound_results, start=1):
+        failures = failed_questions(result)
+        console.line(f"  {idx}. {result.get('sample_label', 'unknown')}")
+        for question in failures[:3]:
+            if isinstance(question, dict):
+                fn_name = question.get("fn_name", "")
+                content = question.get("content", "")
+                prefix = f"{fn_name}: " if fn_name else ""
+                console.line(f"     - {prefix}{truncate_one_line(content, 150)}")
+            else:
+                console.line(f"     - {truncate_one_line(question, 150)}")
+        if len(failures) > 3:
+            console.line(f"     - ... {len(failures) - 3} more failed contracts")
+
+
 class OpenAICompatibleChatModel:
     def __init__(
         self,
@@ -32,10 +160,13 @@ class OpenAICompatibleChatModel:
         api_key: str = "",
         temperature: float = 0.0,
         seed: int = 2024,
+        timeout: float = 120,
+        max_tokens: int = 4096,
+        extra_body: Optional[dict] = None,
     ):
         from openai import OpenAI
 
-        client_kwargs = {}
+        client_kwargs = {"timeout": timeout, "max_retries": 0}
         if len(base_url) > 0:
             client_kwargs["base_url"] = base_url
         if len(api_key) > 0:
@@ -45,42 +176,38 @@ class OpenAICompatibleChatModel:
             client_kwargs["api_key"] = "EMPTY"
         self.client = OpenAI(**client_kwargs)
         self.model = model
+        self.model_name = model.split("/")[-1]
         self.temperature = temperature
         self.seed = seed
+        self.max_tokens = max_tokens
+        self.extra_body = extra_body or {}
 
     def send_messages(
         self,
         messages: list[dict],
         temperature: Optional[float] = None,
         seed: Optional[int] = None,
-        max_tokens: int = 1536,
+        max_tokens: Optional[int] = None,
     ) -> str:
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            temperature=self.temperature if temperature is None else temperature,
-            seed=self.seed if seed is None else seed,
-            max_tokens=max_tokens,
-        )
-        return response.choices[0].message.content or ""
+        request_kwargs = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": self.temperature if temperature is None else temperature,
+            "seed": self.seed if seed is None else seed,
+            "max_tokens": self.max_tokens if max_tokens is None else max_tokens,
+        }
+        if self.extra_body:
+            request_kwargs["extra_body"] = self.extra_body
+        response = self.client.chat.completions.create(**request_kwargs)
+        message = response.choices[0].message
+        return message.content or getattr(message, "reasoning_content", "") or ""
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Scan a Rust crate with Safe4U via OpenAI-compatible Chat Completions (non-batch)."
+        description="Scan a Rust crate with Safe4U via OpenAI-compatible Chat Completions."
     )
     parser.add_argument("--crate", required=True, help="Path to the target crate/workspace root.")
-    parser.add_argument("--model", required=True, help="OpenAI-compatible model ID, e.g. gpt-4o-mini.")
-    parser.add_argument(
-        "--base-url",
-        default=os.environ.get("OPENAI_BASE_URL", ""),
-        help="OpenAI-compatible base URL, e.g. http://127.0.0.1:8000/v1 (default: OPENAI_BASE_URL).",
-    )
-    parser.add_argument(
-        "--api-key",
-        default=os.environ.get("OPENAI_API_KEY", ""),
-        help="API key for OpenAI-compatible endpoint (default: OPENAI_API_KEY).",
-    )
     parser.add_argument("--prompt", default="Safe4U", help="Prompt name in ./prompt (default: Safe4U).")
     parser.add_argument("--repo-name", default="", help="Override repo name (default: folder name of crate).")
     parser.add_argument("--out-dir", default="", help="Output directory (default: result/scan/<repo>).")
@@ -88,28 +215,43 @@ def main() -> int:
     parser.add_argument("--include-tests", action="store_true", help="Include tests/benches/examples.")
     parser.add_argument("--force-context", action="store_true", help="Force re-run context retriever.")
     parser.add_argument("--force-decompose", action="store_true", help="Force re-run safety decomposition.")
+    parser.add_argument("--reuse-results", action="store_true", help="Reuse cached results.json when available.")
+    parser.add_argument("--no-color", action="store_true", help="Disable colored terminal output.")
     args = parser.parse_args()
+    console = Console(no_color=args.no_color)
+    start_time = time.time()
 
-    from utils.scan_utils import (
-        InteractiveEvaluator,
-        add_constraints,
-        extract_candidates,
-        make_decomposer,
-        run_context_retriever,
-    )
-
-    api_key = args.api_key.strip() or os.environ.get("OPENAI_KEY", "").strip()
-    base_url = args.base_url.strip()
-    if len(api_key) == 0 and len(base_url) == 0:
-        logging.error("Missing API key. Set OPENAI_API_KEY/--api-key or provide --base-url for local compatible API.")
+    try:
+        env_config = load_env_config()
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        console.error(f"Failed to read env.json: {exc}")
         return 2
-    # Embedding-based example selection reads OPENAI_KEY from env.
-    if len(api_key) > 0:
-        os.environ["OPENAI_KEY"] = api_key
+
+    model = str(env_config.get("model", "")).strip()
+    api_key = str(env_config.get("api_key", "")).strip()
+    base_url = str(env_config.get("base_url", "")).strip()
+    if len(api_key) == 0 and len(base_url) == 0:
+        console.error("Missing API key. Set api_key in env.json or provide base_url for a local compatible API.")
+        return 2
+    if len(model) == 0:
+        console.error("Missing model. Set model in env.json.")
+        return 2
 
     crate_root = os.path.abspath(args.crate)
     if not os.path.isdir(crate_root):
-        logging.error("Crate path does not exist: %s", crate_root)
+        console.error(f"Crate path does not exist: {crate_root}")
+        return 2
+
+    try:
+        from utils.scan_utils import (
+            InteractiveEvaluator,
+            add_constraints,
+            extract_candidates,
+            make_decomposer,
+            run_context_retriever,
+        )
+    except ModuleNotFoundError as exc:
+        console.error(f"Missing Python dependency: {exc.name}. Run `pip install -r requirements.txt`.")
         return 2
 
     repo_name = args.repo_name.strip() or os.path.basename(os.path.normpath(crate_root))
@@ -120,58 +262,137 @@ def main() -> int:
     dir_check(context_dir)
 
     prompt_info = load_prompt_info(args.prompt)
+    apply_prompt_config(prompt_info, env_config)
     decompose_prompt = prompt_info.get("split_safety_prompt", "decompose_with_self_check")
 
-    logging.info("Extracting candidates from %s", crate_root)
-    candidates = extract_candidates(crate_root, include_tests=args.include_tests, limit=args.limit)
-    if len(candidates) == 0:
-        logging.warning("No candidate functions found.")
+    console.section("Safe4U Scan")
+    console.info(f"Crate: {crate_root}")
+    console.info(f"Model: {model}")
+    console.info(f"Output: {out_dir}")
+
+    result_file = os.path.join(out_dir, "results.json")
+    if args.reuse_results and os.path.exists(result_file):
+        console.section("Reuse Results")
+        with open(result_file, "r", encoding="utf-8") as f:
+            cached_results = json.load(f)
+        summary = summarize_results(cached_results)
+        unsound_results = [result for result in cached_results if result.get("result") == "unsound"]
+        print_summary(console, summary, result_file, unsound_results, 0.0)
         return 0
+
+    console.section("Extract Candidates")
+
+    def candidate_progress(_unit: str, current: int, total: int, detail: str) -> None:
+        done = current >= total or "limit reached" in detail
+        console.progress("Scanning Rust files", current, total, detail, done=done)
+
     candidate_file = os.path.join(items_dir, f"{repo_name}.json")
-    json.dump(candidates, safe_open(candidate_file, "w"), indent=2)
+    if os.path.exists(candidate_file):
+        console.success(f"Using cached candidates: {candidate_file}")
+        with open(candidate_file, "r", encoding="utf-8") as f:
+            candidates = json.load(f)
+    else:
+        candidates = extract_candidates(
+            crate_root,
+            include_tests=args.include_tests,
+            limit=args.limit,
+            progress=candidate_progress,
+        )
+        if len(candidates) == 0:
+            console.warn("No candidate functions found.")
+            return 0
+        json.dump(candidates, safe_open(candidate_file, "w"), indent=2)
+        console.success(f"Found {len(candidates)} candidate functions.")
 
     context_file = os.path.join(context_dir, f"{repo_name}.json")
     if args.force_context or not os.path.exists(context_file):
         repo_root_path = os.path.dirname(crate_root)
-        logging.info("Running context retriever.")
+        console.section("Retrieve Context")
+        console.info("Running Rust context retriever.")
         run_context_retriever(
             repo_root_path=os.path.abspath(repo_root_path),
             repo_name=repo_name,
             item_root_path=os.path.abspath(items_dir),
             result_root_path=os.path.abspath(context_dir),
             target="scan",
+            line_callback=lambda line: console.line(f"  {console.style(line, 'dim')}") if line else None,
         )
+        console.success(f"Context saved to {context_file}")
     else:
-        logging.info("Using cached context: %s", context_file)
+        console.section("Retrieve Context")
+        console.success(f"Using cached context: {context_file}")
 
     with open(context_file, "r", encoding="utf-8") as f:
         samples = json.load(f)
 
-    chatbot = OpenAICompatibleChatModel(args.model, base_url=base_url, api_key=api_key)
+    request_timeout = float(env_config.get("request_timeout", 120))
+    max_tokens = int(env_config.get("max_tokens", 4096))
+    chatbot = OpenAICompatibleChatModel(
+        model,
+        base_url=base_url,
+        api_key=api_key,
+        timeout=request_timeout,
+        max_tokens=max_tokens,
+        extra_body=chat_extra_body(env_config, model),
+    )
     decomposer = make_decomposer(chatbot, decompose_prompt)
     constraints_file = os.path.join(out_dir, "samples_with_constraints.json")
     if args.force_decompose or not os.path.exists(constraints_file):
-        logging.info("Decomposing safety sections with prompt: %s", decompose_prompt)
-        samples = add_constraints(samples, decomposer)
+        console.section("Decompose Safety")
+        console.info(f"Prompt: {decompose_prompt}")
+
+        def decompose_progress(_unit: str, current: int, total: int, detail: str) -> None:
+            console.progress("Decomposing samples", current, total, detail, done=current >= total)
+
+        try:
+            samples = add_constraints(samples, decomposer, progress=decompose_progress)
+        except Exception as exc:
+            console.line()
+            console.error(f"Safety decomposition failed while calling the model: {exc}")
+            console.info("Check env.json fields: model, base_url, api_key, embedding settings, and request_timeout.")
+            return 1
         json.dump(samples, safe_open(constraints_file, "w"), indent=2)
+        console.success(f"Constraints saved to {constraints_file}")
     else:
-        logging.info("Using cached constraints: %s", constraints_file)
+        console.section("Decompose Safety")
+        console.success(f"Using cached constraints: {constraints_file}")
         with open(constraints_file, "r", encoding="utf-8") as f:
             samples = json.load(f)
 
     evaluator = InteractiveEvaluator(prompt_info, chatbot)
-    results = evaluator.evaluate_samples(samples)
-    result_file = os.path.join(out_dir, "results.json")
+    console.section("Evaluate Encapsulations")
+    printed_findings = set()
+
+    def finding_callback(finding: dict) -> None:
+        question = finding.get("question", {})
+        content = question.get("content", "") if isinstance(question, dict) else str(question)
+        fn_name = question.get("fn_name", "") if isinstance(question, dict) else ""
+        key = (finding.get("sample_label", ""), fn_name, content)
+        if key in printed_findings:
+            return
+        printed_findings.add(key)
+        console.finding(finding)
+
+    def eval_progress(_unit: str, current: int, total: int, detail: str) -> None:
+        console.progress("Checking samples", current, total, detail, done=current >= total)
+
+    try:
+        results = evaluator.evaluate_samples(samples, progress=eval_progress, finding_callback=finding_callback)
+    except Exception as exc:
+        console.line()
+        console.error(f"Evaluation failed while calling the model: {exc}")
+        console.info("Check env.json fields: model, base_url, api_key, and request_timeout.")
+        return 1
     json.dump(results, safe_open(result_file, "w"), indent=2)
 
     summary = summarize_results(results)
-    logging.info("Finished. Results saved to %s", result_file)
-    logging.info("Summary: %s", summary)
+    unsound_results = [result for result in results if result.get("result") == "unsound"]
+    print_summary(console, summary, result_file, unsound_results, time.time() - start_time)
     return 0
 
 
 if __name__ == "__main__":
     logging.basicConfig(
-        format="%(asctime)s %(name)-12s %(levelname)-8s %(message)s", level=logging.INFO
+        format="%(levelname)s: %(message)s", level=logging.INFO
     )
     sys.exit(main())
