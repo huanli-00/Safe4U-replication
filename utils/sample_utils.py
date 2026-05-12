@@ -53,7 +53,7 @@ def in_pub_trait(fn_node: Node) -> bool:
     trait = trait_node(fn_node)
     if trait is None:
         return False
-    return "pub " in trait.text.decode()[:8]
+    return trait.text.decode().lstrip().startswith("pub")
 
 
 def get_prev_comment(node: Node):
@@ -93,7 +93,7 @@ def node_of_pub_func(fn_node: Node) -> bool:
     """
     node = fn_node.child_by_field_name("name")
     while node is not None:
-        if node.text.decode() == "pub":
+        if node.text.decode().startswith("pub"):
             return True
         node = node.prev_sibling
     return False

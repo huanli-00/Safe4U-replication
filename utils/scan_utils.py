@@ -3,12 +3,21 @@ import logging
 import os
 import re
 import subprocess
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from .file_utils import dir_check, safe_open
 from .parser_utils import get_parser
-from .sample_utils import Sample, find_parent_fn_node, node_of_unsafe_func, unsafe_block_query
+from .sample_utils import (
+    Sample,
+    find_parent_fn_node,
+    in_pub_trait,
+    node_of_pub_func,
+    node_of_unsafe_func,
+    unsafe_block_query,
+)
 from .prompt_utils import PromptProvider, extract_sample_result
 
 if TYPE_CHECKING:
@@ -69,6 +78,8 @@ def extract_candidates(
             if fn_node is None:
                 continue
             if node_of_unsafe_func(fn_node):
+                continue
+            if not (node_of_pub_func(fn_node) or in_pub_trait(fn_node)):
                 continue
             name_node = fn_node.child_by_field_name("name")
             if name_node is None:
@@ -283,22 +294,58 @@ class InteractiveEvaluator:
         samples: List[dict],
         progress: Optional[ProgressCallback] = None,
         finding_callback: Optional[FindingCallback] = None,
+        jobs: int = 1,
     ) -> List[dict]:
-        results = []
         eligible_samples = [
             sample
             for sample in samples
             if len(sample.get("constraints", [])) > 0 or not self.fine_grained_check
         ]
         total = len(eligible_samples)
-        for idx, sample in enumerate(eligible_samples, start=1):
-            if len(sample.get("constraints", [])) == 0 and self.fine_grained_check:
-                continue
-            sample_label = sample.get("sample_label") or sample.get("name") or f"sample {idx}"
-            if progress is not None:
-                progress("sample", idx, total, f"checking | {sample_label}")
-            result = self.evaluate_sample(sample, finding_callback=finding_callback).__dict__
-            results.append(result)
-            if progress is not None:
-                progress("sample", idx, total, f"{result['result']} | {result['sample_label']}")
-        return results
+        if total == 0:
+            return []
+
+        jobs = max(1, min(int(jobs), total))
+        callback_lock = threading.Lock()
+
+        def evaluate_one(sample: dict) -> dict:
+            if finding_callback is None:
+                return self.evaluate_sample(sample).__dict__
+
+            def locked_callback(finding: dict) -> None:
+                with callback_lock:
+                    finding_callback(finding)
+
+            return self.evaluate_sample(sample, finding_callback=locked_callback).__dict__
+
+        if jobs == 1:
+            results = []
+            for idx, sample in enumerate(eligible_samples, start=1):
+                if len(sample.get("constraints", [])) == 0 and self.fine_grained_check:
+                    continue
+                sample_label = sample.get("sample_label") or sample.get("name") or f"sample {idx}"
+                if progress is not None:
+                    progress("sample", idx, total, f"checking | {sample_label}")
+                result = evaluate_one(sample)
+                results.append(result)
+                if progress is not None:
+                    progress("sample", idx, total, f"{result['result']} | {result['sample_label']}")
+            return results
+
+        results_by_index: List[Optional[dict]] = [None] * total
+        with ThreadPoolExecutor(max_workers=jobs) as executor:
+            future_to_index = {
+                executor.submit(evaluate_one, sample): idx
+                for idx, sample in enumerate(eligible_samples)
+                if len(sample.get("constraints", [])) > 0 or not self.fine_grained_check
+            }
+            completed = 0
+            for future in as_completed(future_to_index):
+                idx = future_to_index[future]
+                result = future.result()
+                results_by_index[idx] = result
+                completed += 1
+                if progress is not None:
+                    progress("sample", completed, total, f"{result['result']} | {result['sample_label']}")
+
+        return [result for result in results_by_index if result is not None]

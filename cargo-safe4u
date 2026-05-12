@@ -71,18 +71,10 @@ class Console:
         total = max(total, 1)
         current = min(current, total)
         percent = current / total
-        width = 24
-        filled = int(width * percent)
-        bar = "█" * filled + "░" * (width - filled)
         suffix = f" {detail}" if detail else ""
-        message = f"{self.style('↻', 'cyan')} {label} [{bar}] {current}/{total} {percent:>5.0%}{suffix}"
-        if self.interactive:
-            self.stream.write("\r" + message[:160])
-            if done:
-                self.stream.write("\n")
-            self.stream.flush()
-            return
-        if done or total <= 20 or current == 1 or current == total or current % 10 == 0:
+        message = f"{self.style('↻', 'cyan')} {label}: {current}/{total} ({percent:>3.0%}){suffix}"
+        interval = max(1, total // 20)
+        if done or total <= 20 or current == 1 or current == total or current % interval == 0:
             self.line(message)
 
     def finding(self, finding: dict) -> None:
@@ -116,6 +108,69 @@ def failed_questions(result: dict) -> list:
     return failures
 
 
+def format_failed_question(question: object) -> str:
+    if not isinstance(question, dict):
+        return truncate_one_line(str(question), 180)
+    fn_name = question.get("fn_name", "")
+    q_type = question.get("type", "")
+    content = question.get("content", "")
+    parts = []
+    if fn_name:
+        parts.append(str(fn_name))
+    if q_type:
+        parts.append(str(q_type))
+    prefix = f"{' / '.join(parts)}: " if parts else ""
+    return prefix + truncate_one_line(content, 180)
+
+
+def format_constraint(constraint: object) -> str:
+    if not isinstance(constraint, dict):
+        return truncate_one_line(str(constraint), 180)
+    fn_name = constraint.get("fn_name", "")
+    c_type = constraint.get("type", "")
+    if isinstance(c_type, list):
+        c_type = ", ".join(str(item) for item in c_type)
+    content = constraint.get("content", "")
+    parts = []
+    if fn_name:
+        parts.append(str(fn_name))
+    if c_type:
+        parts.append(str(c_type))
+    prefix = f"{' / '.join(parts)}: " if parts else ""
+    return prefix + truncate_one_line(content, 180)
+
+
+def sample_line(sample: dict) -> str:
+    start_line = sample.get("start_line")
+    if isinstance(start_line, int):
+        return f":{start_line + 1}"
+    return ""
+
+
+def print_encapsulation_inventory(console: Console, samples: list[dict]) -> None:
+    console.section("Detected Encapsulations")
+    console.info(f"Public safe encapsulations of unsafe code: {len(samples)}")
+    if not samples:
+        return
+
+    by_file: dict[str, list[dict]] = {}
+    for sample in samples:
+        relative_file = sample.get("relative_file", "unknown")
+        by_file.setdefault(relative_file, []).append(sample)
+
+    for relative_file in sorted(by_file):
+        console.line(f"  {relative_file}")
+        for sample in by_file[relative_file]:
+            fn_name = sample.get("name") or sample.get("fn_name") or sample.get("sample_label", "unknown")
+            constraints = sample.get("constraints", [])
+            console.line(f"    - {fn_name}{sample_line(sample)} ({len(constraints)} constraints)")
+            if not constraints:
+                console.line("      - no safety constraints found")
+                continue
+            for constraint in constraints:
+                console.line(f"      - {format_constraint(constraint)}")
+
+
 def print_summary(console: Console, summary: dict, result_file: str, unsound_results: list, elapsed: float) -> None:
     total = sum(summary.values())
     console.section("Summary")
@@ -136,20 +191,14 @@ def print_summary(console: Console, summary: dict, result_file: str, unsound_res
         console.success("No unsound encapsulations detected.")
         return
     console.line()
-    console.line(console.style("Unsound encapsulations:", "red", "bold"))
+    console.line(console.style("Unsatisfied contracts:", "red", "bold"))
     for idx, result in enumerate(unsound_results, start=1):
         failures = failed_questions(result)
-        console.line(f"  {idx}. {result.get('sample_label', 'unknown')}")
-        for question in failures[:3]:
-            if isinstance(question, dict):
-                fn_name = question.get("fn_name", "")
-                content = question.get("content", "")
-                prefix = f"{fn_name}: " if fn_name else ""
-                console.line(f"     - {prefix}{truncate_one_line(content, 150)}")
-            else:
-                console.line(f"     - {truncate_one_line(question, 150)}")
-        if len(failures) > 3:
-            console.line(f"     - ... {len(failures) - 3} more failed contracts")
+        count = len(failures)
+        suffix = f" ({count} failed contract{'s' if count != 1 else ''})" if count else ""
+        console.line(f"  {idx}. {result.get('sample_label', 'unknown')}{suffix}")
+        for question in failures:
+            console.line(f"     - {format_failed_question(question)}")
 
 
 class OpenAICompatibleChatModel:
@@ -215,7 +264,8 @@ def main() -> int:
     parser.add_argument("--include-tests", action="store_true", help="Include tests/benches/examples.")
     parser.add_argument("--force-context", action="store_true", help="Force re-run context retriever.")
     parser.add_argument("--force-decompose", action="store_true", help="Force re-run safety decomposition.")
-    parser.add_argument("--reuse-results", action="store_true", help="Reuse cached results.json when available.")
+    parser.add_argument("--reuse-results", action="store_true", help="Read existing results.json when available.")
+    parser.add_argument("--jobs", type=int, default=None, help="Parallel evaluation workers (default: env jobs or 4).")
     parser.add_argument("--no-color", action="store_true", help="Disable colored terminal output.")
     args = parser.parse_args()
     console = Console(no_color=args.no_color)
@@ -235,6 +285,14 @@ def main() -> int:
         return 2
     if len(model) == 0:
         console.error("Missing model. Set model in env.json.")
+        return 2
+    try:
+        jobs = int(args.jobs if args.jobs is not None else env_config.get("jobs", 4))
+    except (TypeError, ValueError):
+        console.error("Invalid jobs value. Set --jobs or env.json jobs to a positive integer.")
+        return 2
+    if jobs < 1:
+        console.error("Invalid jobs value. Set --jobs to at least 1.")
         return 2
 
     crate_root = os.path.abspath(args.crate)
@@ -269,10 +327,14 @@ def main() -> int:
     console.info(f"Crate: {crate_root}")
     console.info(f"Model: {model}")
     console.info(f"Output: {out_dir}")
+    console.info(f"Evaluation jobs: {jobs}")
 
     result_file = os.path.join(out_dir, "results.json")
+    constraints_file = os.path.join(out_dir, "samples_with_constraints.json")
     if args.reuse_results and os.path.exists(result_file):
-        console.section("Reuse Results")
+        if os.path.exists(constraints_file):
+            with open(constraints_file, "r", encoding="utf-8") as f:
+                print_encapsulation_inventory(console, json.load(f))
         with open(result_file, "r", encoding="utf-8") as f:
             cached_results = json.load(f)
         summary = summarize_results(cached_results)
@@ -288,7 +350,6 @@ def main() -> int:
 
     candidate_file = os.path.join(items_dir, f"{repo_name}.json")
     if os.path.exists(candidate_file):
-        console.success(f"Using cached candidates: {candidate_file}")
         with open(candidate_file, "r", encoding="utf-8") as f:
             candidates = json.load(f)
     else:
@@ -302,7 +363,7 @@ def main() -> int:
             console.warn("No candidate functions found.")
             return 0
         json.dump(candidates, safe_open(candidate_file, "w"), indent=2)
-        console.success(f"Found {len(candidates)} candidate functions.")
+    console.success(f"Detected {len(candidates)} public safe encapsulation candidates.")
 
     context_file = os.path.join(context_dir, f"{repo_name}.json")
     if args.force_context or not os.path.exists(context_file):
@@ -317,10 +378,10 @@ def main() -> int:
             target="scan",
             line_callback=lambda line: console.line(f"  {console.style(line, 'dim')}") if line else None,
         )
-        console.success(f"Context saved to {context_file}")
+        console.success("Context ready.")
     else:
         console.section("Retrieve Context")
-        console.success(f"Using cached context: {context_file}")
+        console.success("Context ready.")
 
     with open(context_file, "r", encoding="utf-8") as f:
         samples = json.load(f)
@@ -336,7 +397,6 @@ def main() -> int:
         extra_body=chat_extra_body(env_config, model),
     )
     decomposer = make_decomposer(chatbot, decompose_prompt)
-    constraints_file = os.path.join(out_dir, "samples_with_constraints.json")
     if args.force_decompose or not os.path.exists(constraints_file):
         console.section("Decompose Safety")
         console.info(f"Prompt: {decompose_prompt}")
@@ -352,32 +412,23 @@ def main() -> int:
             console.info("Check env.json fields: model, base_url, api_key, embedding settings, and request_timeout.")
             return 1
         json.dump(samples, safe_open(constraints_file, "w"), indent=2)
-        console.success(f"Constraints saved to {constraints_file}")
+        console.success("Constraints ready.")
     else:
         console.section("Decompose Safety")
-        console.success(f"Using cached constraints: {constraints_file}")
         with open(constraints_file, "r", encoding="utf-8") as f:
             samples = json.load(f)
+        console.success("Constraints ready.")
+
+    print_encapsulation_inventory(console, samples)
 
     evaluator = InteractiveEvaluator(prompt_info, chatbot)
     console.section("Evaluate Encapsulations")
-    printed_findings = set()
-
-    def finding_callback(finding: dict) -> None:
-        question = finding.get("question", {})
-        content = question.get("content", "") if isinstance(question, dict) else str(question)
-        fn_name = question.get("fn_name", "") if isinstance(question, dict) else ""
-        key = (finding.get("sample_label", ""), fn_name, content)
-        if key in printed_findings:
-            return
-        printed_findings.add(key)
-        console.finding(finding)
 
     def eval_progress(_unit: str, current: int, total: int, detail: str) -> None:
         console.progress("Checking samples", current, total, detail, done=current >= total)
 
     try:
-        results = evaluator.evaluate_samples(samples, progress=eval_progress, finding_callback=finding_callback)
+        results = evaluator.evaluate_samples(samples, progress=eval_progress, jobs=jobs)
     except Exception as exc:
         console.line()
         console.error(f"Evaluation failed while calling the model: {exc}")

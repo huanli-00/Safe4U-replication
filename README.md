@@ -21,7 +21,15 @@ The current branch is focused on direct, user-friendly crate scanning through
 
 Safe4U combines static Rust context retrieval with model-based safety-contract
 checking. The goal is to make unsafe-wrapper review easier to run on a real
-crate and easier to triage from the terminal.
+crate and easier to triage from the terminal. Particularly, Safe4U works within the following steps:
+
+1. Candidate extraction finds safe Rust functions containing `unsafe` blocks.
+2. The Rust context retriever resolves surrounding type, trait, function, and
+   documentation context.
+3. Safety decomposition turns unsafe callee documentation into fine-grained
+   contracts.
+4. Evaluation checks whether the safe wrapper guarantees each contract.
+5. Results are summarized and saved for review.
 
 ## What It Reports
 
@@ -35,6 +43,14 @@ During a scan, the CLI shows:
 - Immediate findings when an unsound encapsulation is detected.
 - A final summary of `sound`, `unsound`, and `unknown` results.
 - Machine-readable JSON outputs under `result/scan/<repo-name>/`.
+
+## Requirements
+
+- Linux environment, tested on Ubuntu-like systems.
+- Python>=3.10.
+- Rust toolchain available on `PATH`.
+- Python packages from `requirements.txt`.
+- An OpenAI-compatible chat model endpoint.
 
 ## Quick Start
 
@@ -76,23 +92,12 @@ servers such as vLLM. Configure the endpoint in `env.json`:
 
 ```json
 {
-  "model": "your-model",
-  "base_url": "http://127.0.0.1:8000/v1",
-  "api_key": "EMPTY",
-  "embedding_model": "text-embedding-3-small",
-  "embedding_url": "",
-  "embedding_key": ""
-}
-```
-
-For prompts that use embedding-based examples, configure embeddings in the same
-file. Unset fields use Safe4U defaults:
-
-```json
-{
-  "embedding_model": "text-embedding-3-small",
-  "embedding_url": "http://127.0.0.1:8001/v1",
-  "embedding_key": "EMPTY"
+  "model": "deepseek-v4-flash",
+  "base_url": "https://api.deepseek.com/v1",
+  "api_key": "sk-xxxx",
+  "embedding_model": "qwen/qwen3-embedding-8b",
+  "embedding_url": "https://openrouter.ai/api/v1",
+  "embedding_key": "sk-xxxx"
 }
 ```
 
@@ -111,31 +116,6 @@ file. Unset fields use Safe4U defaults:
 --no-color               Disable colored terminal output
 ```
 
-Example for a quick smoke run:
-
-```bash
-conda run -n unsafe ./cargo-safe4u \
-  --crate /path/to/rust/crate \
-  --limit 5
-```
-
-For repeated demos on a crate that already has cached artifacts, run the same
-command again. Safe4U reuses candidate, context, and decomposition caches by
-default:
-
-```bash
-conda run -n unsafe ./cargo-safe4u \
-  --crate /path/to/rust/crate
-```
-
-To show the cached final report immediately without calling the model again:
-
-```bash
-conda run -n unsafe ./cargo-safe4u \
-  --crate /path/to/rust/crate \
-  --reuse-results
-```
-
 ## Reading Results
 
 The terminal output is the fastest way to review a run: it highlights immediate
@@ -147,26 +127,6 @@ In the final results, each checked item contains:
 - `sample_label`: the scanned function.
 - `result`: `sound`, `unsound`, or `unknown`.
 - `response`: per-obligation model judgments and explanations.
-
-## How Safe4U Works
-
-1. Candidate extraction finds safe Rust functions containing `unsafe` blocks.
-2. The Rust context retriever resolves surrounding type, trait, function, and
-   documentation context.
-3. Safety decomposition turns unsafe callee documentation into fine-grained
-   obligations.
-4. Evaluation checks whether the safe wrapper guarantees each obligation.
-5. Results are summarized and saved for review.
-
-## Requirements
-
-- Linux environment, tested on Ubuntu-like systems.
-- Python 3.10.
-- Rust toolchain available on `PATH`.
-- Python packages from `requirements.txt`.
-- An OpenAI-compatible chat model endpoint.
-
-For local LLM serving, vLLM or another OpenAI-compatible server can be used.
 
 ## Notes
 
