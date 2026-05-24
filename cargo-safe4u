@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import sys
+import threading
 import time
 from typing import Optional
 
@@ -31,10 +32,19 @@ class Console:
         "bold": "\033[1m",
         "dim": "\033[2m",
         "red": "\033[31m",
+        "bright_red": "\033[91m",
         "green": "\033[32m",
+        "bright_green": "\033[92m",
         "yellow": "\033[33m",
+        "bright_yellow": "\033[93m",
         "blue": "\033[34m",
+        "bright_blue": "\033[94m",
+        "magenta": "\033[35m",
+        "bright_magenta": "\033[95m",
         "cyan": "\033[36m",
+        "bright_cyan": "\033[96m",
+        "white": "\033[97m",
+        "gray": "\033[90m",
         "reset": "\033[0m",
     }
 
@@ -42,6 +52,8 @@ class Console:
         self.stream = sys.stderr
         self.use_color = self.stream.isatty() and not no_color and "NO_COLOR" not in os.environ
         self.interactive = self.stream.isatty()
+        self.source_root = ""
+        self._lock = threading.Lock()
 
     def style(self, text: str, *styles: str) -> str:
         if not self.use_color:
@@ -49,48 +61,124 @@ class Console:
         return "".join(self.COLORS[style] for style in styles) + text + self.COLORS["reset"]
 
     def line(self, message: str = "") -> None:
-        print(message, file=self.stream)
+        with self._lock:
+            print(message, file=self.stream)
+
+    def set_source_root(self, source_root: str) -> None:
+        self.source_root = source_root
+
+    def rule(self, title: str = "", color: str = "cyan") -> None:
+        width = 78
+        if title:
+            text = f" {title} "
+            left = "━" * 3
+            right = "━" * max(1, width - len(title) - 5)
+            self.line(self.style(left + text + right, color, "bold"))
+        else:
+            self.line(self.style("━" * width, color))
+
+    def banner(self, title: str, subtitle: str = "") -> None:
+        self.line()
+        self.rule(color="bright_cyan")
+        self.line(f"{self.style('◆', 'bright_magenta')} {self.style(title, 'bold', 'bright_cyan')}")
+        if subtitle:
+            self.line(f"  {self.style(subtitle, 'dim')}")
+        self.rule(color="bright_cyan")
 
     def section(self, title: str) -> None:
         self.line()
-        self.line(f"{self.style('▸', 'cyan')} {self.style(title, 'bold')}")
+        self.line(f"{self.style('▸', 'bright_cyan')} {self.style(title, 'bold', 'white')}")
 
     def info(self, message: str) -> None:
-        self.line(f"{self.style('•', 'blue')} {message}")
+        self.line(f"{self.style('•', 'bright_blue')} {message}")
 
     def success(self, message: str) -> None:
-        self.line(f"{self.style('✓', 'green')} {message}")
+        self.line(f"{self.style('✓', 'bright_green')} {message}")
 
     def warn(self, message: str) -> None:
-        self.line(f"{self.style('!', 'yellow')} {message}")
+        self.line(f"{self.style('!', 'bright_yellow')} {message}")
 
     def error(self, message: str) -> None:
-        self.line(f"{self.style('✗', 'red')} {message}")
+        self.line(f"{self.style('✗', 'bright_red')} {message}")
+
+    def kv(self, label: str, value: object, color: str = "white") -> None:
+        self.line(f"  {self.style(label + ':', 'bold', 'gray')} {self.style(str(value), color)}")
 
     def progress(self, label: str, current: int, total: int, detail: str = "", done: bool = False) -> None:
         total = max(total, 1)
         current = min(current, total)
         percent = current / total
+        bar_width = 22
+        filled = int(round(bar_width * percent))
+        bar = self.style("█" * filled, "bright_cyan") + self.style("░" * (bar_width - filled), "gray")
         suffix = f" {detail}" if detail else ""
-        message = f"{self.style('↻', 'cyan')} {label}: {current}/{total} ({percent:>3.0%}){suffix}"
+        message = (
+            f"{self.style('↻', 'bright_cyan')} {label}: "
+            f"{bar} {current}/{total} ({percent:>3.0%}){suffix}"
+        )
         interval = max(1, total // 20)
         if done or total <= 20 or current == 1 or current == total or current % interval == 0:
             self.line(message)
 
+    def model_start(self, task: str, input_tokens: int, max_tokens: int) -> None:
+        token_hint = f"input≈{input_tokens:,}, max_out={max_tokens:,}"
+        self.line(
+            f"{self.style('LLM', 'bold', 'bright_magenta')} "
+            f"{self.style('→', 'bright_magenta')} {task} "
+            f"{self.style('[' + token_hint + ']', 'dim')}"
+        )
+
+    def model_done(
+        self,
+        task: str,
+        prompt_tokens: Optional[int],
+        completion_tokens: Optional[int],
+        total_tokens: Optional[int],
+        elapsed: float,
+        aggregate_total: int,
+    ) -> None:
+        if total_tokens is None:
+            usage = "tokens unavailable"
+        else:
+            usage = f"in={prompt_tokens or 0:,} out={completion_tokens or 0:,} total={total_tokens:,}"
+        self.line(
+            f"{self.style('LLM', 'bold', 'bright_green')} "
+            f"{self.style('✓', 'bright_green')} {task} "
+            f"{self.style('[' + usage + f', {elapsed:.1f}s, run={aggregate_total:,}' + ']', 'dim')}"
+        )
+
     def finding(self, finding: dict) -> None:
         question = finding.get("question", {})
-        content = question.get("content", "") if isinstance(question, dict) else str(question)
         fn_name = question.get("fn_name", "") if isinstance(question, dict) else ""
         q_type = question.get("type", "") if isinstance(question, dict) else ""
-        self.line()
-        self.line(self.style("✗ Unsound encapsulation detected", "red", "bold"))
-        self.line(f"  sample: {finding.get('sample_label', 'unknown')}")
+        details = []
         if fn_name:
-            self.line(f"  unsafe callee: {fn_name}")
+            details.append(f"callee={fn_name}")
         if q_type:
-            self.line(f"  contract type: {q_type}")
-        if content:
-            self.line(f"  violated contract: {truncate_one_line(content, 180)}")
+            details.append(f"type={q_type}")
+        suffix = f" ({', '.join(details)})" if details else ""
+        self.line(
+            f"{self.style('✗', 'bright_red')} "
+            f"{self.style('Unsound candidate', 'bright_red', 'bold')}: "
+            f"{finding.get('sample_label', 'unknown')}{suffix}; details in final summary."
+        )
+
+    def print_call_excerpt(self, sample: dict, callee_name: str = "", context: int = 3) -> None:
+        excerpt = code_excerpt_for_callee(sample, callee_name, context=context)
+        if excerpt is None:
+            return
+        relative_file = excerpt["relative_file"]
+        line_no = excerpt["line_no"]
+        self.line(f"  {self.style('call site:', 'bold', 'gray')} {relative_file}:{line_no}")
+        self.line(f"  {self.style('nearby code', 'bold', 'cyan')}")
+        for number, text, is_focus in excerpt["lines"]:
+            marker = ">" if is_focus else " "
+            gutter_color = "bright_red" if is_focus else "gray"
+            code_color = "bright_red" if is_focus else "white"
+            rendered = highlight_rust_line(self, text)
+            if is_focus:
+                rendered = self.style(rendered, "bold", code_color)
+            self.line(f"  {self.style(marker, gutter_color)} {self.style(f'{number:>4} │', gutter_color)} {rendered}")
 
 
 def truncate_one_line(text: str, limit: int = 120) -> str:
@@ -100,12 +188,139 @@ def truncate_one_line(text: str, limit: int = 120) -> str:
     return text[: limit - 1].rstrip() + "…"
 
 
+def estimate_tokens_from_messages(messages: list[dict]) -> int:
+    # Lightweight estimate used before the API returns authoritative usage.
+    total_chars = 0
+    for message in messages:
+        total_chars += len(str(message.get("role", ""))) + len(str(message.get("content", ""))) + 8
+    return max(1, total_chars // 4)
+
+
+def find_callee_offset(sample: dict, callee_name: str) -> Optional[int]:
+    detail_info = sample.get("detail_info", [])
+    unsafe_offsets = []
+    for item in detail_info:
+        if item.get("item_type") != "function":
+            continue
+        declaration = item.get("declaration", "")
+        if "unsafe " not in declaration:
+            continue
+        if callee_name and item.get("name") != callee_name:
+            continue
+        offset = item.get("offset_in_fn")
+        if isinstance(offset, int):
+            unsafe_offsets.append(offset)
+    if unsafe_offsets:
+        return min(unsafe_offsets)
+
+    raw_code = sample.get("raw_code", "")
+    if callee_name:
+        idx = raw_code.find(callee_name)
+        if idx >= 0:
+            return idx
+    return None
+
+
+def code_excerpt_for_callee(sample: dict, callee_name: str = "", context: int = 3) -> Optional[dict]:
+    raw_code = sample.get("raw_code", "")
+    if not raw_code:
+        return None
+    offset = find_callee_offset(sample, callee_name)
+    if offset is None:
+        return None
+    lines = raw_code.splitlines()
+    focus_idx = raw_code[:offset].count("\n")
+    if focus_idx < 0 or focus_idx >= len(lines):
+        return None
+    start = max(0, focus_idx - context)
+    end = min(len(lines), focus_idx + context + 1)
+    base_line = sample.get("start_line", 0)
+    if not isinstance(base_line, int):
+        base_line = 0
+    excerpt_lines = [
+        (base_line + idx + 1, lines[idx].rstrip(), idx == focus_idx)
+        for idx in range(start, end)
+    ]
+    return {
+        "relative_file": sample.get("relative_file", "unknown"),
+        "line_no": base_line + focus_idx + 1,
+        "lines": excerpt_lines,
+    }
+
+
+def highlight_rust_line(console: Console, line: str) -> str:
+    if not console.use_color:
+        return line
+    highlighted = line
+    replacements = [
+        ("unsafe", console.style("unsafe", "bright_red", "bold")),
+        ("std::slice::from_raw_parts", console.style("std::slice::from_raw_parts", "bright_magenta", "bold")),
+        ("rustix::mm::mmap", console.style("rustix::mm::mmap", "bright_magenta", "bold")),
+        ("rustix::mm::munmap", console.style("rustix::mm::munmap", "bright_magenta", "bold")),
+    ]
+    for needle, replacement in replacements:
+        highlighted = highlighted.replace(needle, replacement)
+    return highlighted
+
+
 def failed_questions(result: dict) -> list:
     failures = []
     for response in result.get("response", []):
         if response.get("result") == "No":
             failures.append(response.get("question", ""))
     return failures
+
+
+def failed_responses(result: dict) -> list[dict]:
+    return [response for response in result.get("response", []) if response.get("result") == "No"]
+
+
+def evidence_output(response: dict) -> str:
+    direct_response = response.get("response")
+    if isinstance(direct_response, str) and direct_response.strip():
+        return extract_analysis_section(direct_response.strip())
+    for sub_response in response.get("sub_response", []):
+        if sub_response.get("result") == "No":
+            content = sub_response.get("content", "")
+            if isinstance(content, str) and content.strip():
+                return extract_analysis_section(content.strip())
+    for sub_response in response.get("sub_response", []):
+        content = sub_response.get("content", "")
+        if isinstance(content, str) and content.strip():
+            return extract_analysis_section(content.strip())
+    return ""
+
+
+def extract_analysis_section(text: str) -> str:
+    lines = text.splitlines()
+    start = None
+    for idx, line in enumerate(lines):
+        normalized = line.strip().strip("#* :").lower()
+        if normalized == "analysis towards the contract":
+            start = idx + 1
+            break
+    if start is None:
+        return text
+
+    end = len(lines)
+    for idx in range(start, len(lines)):
+        normalized = lines[idx].strip().strip("#* :").lower()
+        if normalized in {
+            "final determination",
+            "answer",
+            "expressions related to the contract",
+            "expression related to the contract",
+        }:
+            end = idx
+            break
+
+    section = "\n".join(lines[start:end]).strip()
+    return section or text
+
+
+def print_indented_block(console: Console, text: str, indent: str = "       ") -> None:
+    for line in text.splitlines():
+        console.line(f"{indent}{line}")
 
 
 def format_failed_question(question: object) -> str:
@@ -147,9 +362,53 @@ def sample_line(sample: dict) -> str:
     return ""
 
 
-def print_encapsulation_inventory(console: Console, samples: list[dict]) -> None:
-    console.section("Detected Encapsulations")
+def unsafe_function_items(sample: dict) -> list[dict]:
+    return [
+        item
+        for item in sample.get("detail_info", [])
+        if item.get("item_type") == "function" and "unsafe " in item.get("declaration", "")
+    ]
+
+
+def print_context_inventory(console: Console, samples: list[dict]) -> None:
+    console.info(f"Context samples: {len(samples)}")
+    if not samples:
+        return
+
+    by_file: dict[str, list[dict]] = {}
+    for sample in samples:
+        relative_file = sample.get("relative_file", "unknown")
+        by_file.setdefault(relative_file, []).append(sample)
+
+    for relative_file in sorted(by_file):
+        console.line(f"  {relative_file}")
+        for sample in by_file[relative_file]:
+            fn_name = sample.get("name") or sample.get("fn_name") or sample.get("sample_label", "unknown")
+            detail_info = sample.get("detail_info", [])
+            unsafe_items = unsafe_function_items(sample)
+            unsafe_names = [item.get("name", "unknown") for item in unsafe_items]
+            unsafe_text = ", ".join(unsafe_names) if unsafe_names else "none"
+            context_count = max(0, len(detail_info) - len(unsafe_items))
+            console.line(
+                f"    {console.style('●', 'bright_cyan')} "
+                f"{console.style(fn_name + sample_line(sample), 'bold')}"
+                f" {console.style(f'| unsafe callees: {unsafe_text} | context refs: {context_count}', 'dim')}"
+            )
+            for item in unsafe_items:
+                declaration = truncate_one_line(item.get("declaration", ""), 140)
+                console.line(f"      {console.style('-', 'gray')} {item.get('name', 'unknown')}: {declaration}")
+
+
+def print_encapsulation_inventory(console: Console, samples: list[dict], title: Optional[str] = "Detected Encapsulations") -> None:
+    if title:
+        console.section(title)
+    unsafe_call_count = sum(
+        1
+        for sample in samples
+        for item in unsafe_function_items(sample)
+    )
     console.info(f"Public safe encapsulations of unsafe code: {len(samples)}")
+    console.info(f"Resolved unsafe callees: {unsafe_call_count}")
     if not samples:
         return
 
@@ -163,15 +422,45 @@ def print_encapsulation_inventory(console: Console, samples: list[dict]) -> None
         for sample in by_file[relative_file]:
             fn_name = sample.get("name") or sample.get("fn_name") or sample.get("sample_label", "unknown")
             constraints = sample.get("constraints", [])
-            console.line(f"    - {fn_name}{sample_line(sample)} ({len(constraints)} constraints)")
+            callees = [item.get("name") for item in unsafe_function_items(sample)]
+            callee_text = f" | unsafe: {', '.join(callees)}" if callees else ""
+            console.line(
+                f"    {console.style('●', 'bright_cyan')} "
+                f"{console.style(fn_name + sample_line(sample), 'bold')}"
+                f" {console.style(f'({len(constraints)} constraints)', 'dim')}{callee_text}"
+            )
             if not constraints:
-                console.line("      - no safety constraints found")
+                console.line(f"      {console.style('-', 'gray')} no safety constraints found")
                 continue
             for constraint in constraints:
-                console.line(f"      - {format_constraint(constraint)}")
+                console.line(f"      {console.style('-', 'gray')} {format_constraint(constraint)}")
 
 
-def print_summary(console: Console, summary: dict, result_file: str, unsound_results: list, elapsed: float) -> None:
+def print_token_summary(console: Console, token_stats: Optional[dict]) -> None:
+    if not token_stats:
+        return
+    console.line(
+        "  "
+        + " | ".join(
+            [
+                console.style(f"requests {token_stats.get('requests', 0)}", "bright_magenta"),
+                console.style(f"input {token_stats.get('prompt_tokens', 0):,}", "bright_blue"),
+                console.style(f"output {token_stats.get('completion_tokens', 0):,}", "bright_green"),
+                console.style(f"total {token_stats.get('total_tokens', 0):,}", "bright_yellow"),
+            ]
+        )
+    )
+
+
+def print_summary(
+    console: Console,
+    summary: dict,
+    result_file: str,
+    unsound_results: list,
+    elapsed: float,
+    sample_by_label: Optional[dict[str, dict]] = None,
+    token_stats: Optional[dict] = None,
+) -> None:
     total = sum(summary.values())
     console.section("Summary")
     console.line(
@@ -185,6 +474,7 @@ def print_summary(console: Console, summary: dict, result_file: str, unsound_res
             ]
         )
     )
+    print_token_summary(console, token_stats)
     console.info(f"Results saved to {result_file}")
     console.info(f"Elapsed: {elapsed:.1f}s")
     if not unsound_results:
@@ -193,12 +483,31 @@ def print_summary(console: Console, summary: dict, result_file: str, unsound_res
     console.line()
     console.line(console.style("Unsatisfied contracts:", "red", "bold"))
     for idx, result in enumerate(unsound_results, start=1):
-        failures = failed_questions(result)
+        failures = failed_responses(result)
         count = len(failures)
         suffix = f" ({count} failed contract{'s' if count != 1 else ''})" if count else ""
-        console.line(f"  {idx}. {result.get('sample_label', 'unknown')}{suffix}")
-        for question in failures:
-            console.line(f"     - {format_failed_question(question)}")
+        sample_label = result.get("sample_label", "unknown")
+        console.line(f"  {idx}. {console.style(sample_label, 'bold')}{suffix}")
+        sample = sample_by_label.get(sample_label) if sample_by_label else None
+
+        printed_call_sites = set()
+        if isinstance(sample, dict):
+            for response in failures:
+                question = response.get("question", "")
+                if not isinstance(question, dict):
+                    continue
+                callee = question.get("fn_name", "")
+                if callee and callee not in printed_call_sites:
+                    printed_call_sites.add(callee)
+                    console.print_call_excerpt(sample, callee, context=2)
+
+        for response in failures:
+            question = response.get("question", "")
+            console.line(f"     {console.style('-', 'gray')} {format_failed_question(question)}")
+            output = evidence_output(response)
+            if output:
+                console.line(f"       {console.style('LLM evidence:', 'bold', 'bright_magenta')}")
+                print_indented_block(console, output, indent="       ")
 
 
 class OpenAICompatibleChatModel:
@@ -230,6 +539,41 @@ class OpenAICompatibleChatModel:
         self.seed = seed
         self.max_tokens = max_tokens
         self.extra_body = extra_body or {}
+        self._thread_state = threading.local()
+        self._stats_lock = threading.Lock()
+        self._event_callback = None
+        self.request_count = 0
+        self.prompt_tokens = 0
+        self.completion_tokens = 0
+        self.total_tokens = 0
+
+    def set_event_callback(self, callback) -> None:
+        self._event_callback = callback
+
+    def set_task(self, task: str) -> None:
+        self._thread_state.task = task
+
+    def current_task(self) -> str:
+        return getattr(self._thread_state, "task", "Chat completion")
+
+    def token_stats(self) -> dict:
+        with self._stats_lock:
+            return {
+                "requests": self.request_count,
+                "prompt_tokens": self.prompt_tokens,
+                "completion_tokens": self.completion_tokens,
+                "total_tokens": self.total_tokens,
+            }
+
+    @staticmethod
+    def _usage_value(usage: object, key: str) -> Optional[int]:
+        if usage is None:
+            return None
+        if isinstance(usage, dict):
+            value = usage.get(key)
+        else:
+            value = getattr(usage, key, None)
+        return value if isinstance(value, int) else None
 
     def send_messages(
         self,
@@ -238,17 +582,55 @@ class OpenAICompatibleChatModel:
         seed: Optional[int] = None,
         max_tokens: Optional[int] = None,
     ) -> str:
+        task = self.current_task()
+        max_output_tokens = self.max_tokens if max_tokens is None else max_tokens
+        estimated_input_tokens = estimate_tokens_from_messages(messages)
+        if self._event_callback is not None:
+            self._event_callback(
+                "start",
+                {
+                    "task": task,
+                    "input_tokens": estimated_input_tokens,
+                    "max_tokens": max_output_tokens,
+                },
+            )
+        started_at = time.time()
         request_kwargs = {
             "model": self.model,
             "messages": messages,
             "temperature": self.temperature if temperature is None else temperature,
             "seed": self.seed if seed is None else seed,
-            "max_tokens": self.max_tokens if max_tokens is None else max_tokens,
+            "max_tokens": max_output_tokens,
         }
         if self.extra_body:
             request_kwargs["extra_body"] = self.extra_body
         response = self.client.chat.completions.create(**request_kwargs)
         message = response.choices[0].message
+        usage = getattr(response, "usage", None)
+        prompt_tokens = self._usage_value(usage, "prompt_tokens")
+        completion_tokens = self._usage_value(usage, "completion_tokens")
+        total_tokens = self._usage_value(usage, "total_tokens")
+        with self._stats_lock:
+            self.request_count += 1
+            if prompt_tokens is not None:
+                self.prompt_tokens += prompt_tokens
+            if completion_tokens is not None:
+                self.completion_tokens += completion_tokens
+            if total_tokens is not None:
+                self.total_tokens += total_tokens
+            aggregate_total = self.total_tokens
+        if self._event_callback is not None:
+            self._event_callback(
+                "done",
+                {
+                    "task": task,
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "total_tokens": total_tokens,
+                    "elapsed": time.time() - started_at,
+                    "aggregate_total": aggregate_total,
+                },
+            )
         return message.content or getattr(message, "reasoning_content", "") or ""
 
 
@@ -299,6 +681,7 @@ def main() -> int:
     if not os.path.isdir(crate_root):
         console.error(f"Crate path does not exist: {crate_root}")
         return 2
+    console.set_source_root(crate_root)
 
     try:
         from utils.scan_utils import (
@@ -323,23 +706,36 @@ def main() -> int:
     apply_prompt_config(prompt_info, env_config)
     decompose_prompt = prompt_info.get("split_safety_prompt", "decompose_with_self_check")
 
-    console.section("Safe4U Scan")
-    console.info(f"Crate: {crate_root}")
-    console.info(f"Model: {model}")
-    console.info(f"Output: {out_dir}")
-    console.info(f"Evaluation jobs: {jobs}")
+    console.banner("Safe4U Scan", "Rust unsafe-wrapper audit with model-assisted contract checking")
+    console.kv("crate", crate_root, "bright_cyan")
+    console.kv("model", model, "bright_magenta")
+    console.kv("prompt", args.prompt, "bright_blue")
+    console.kv("output", out_dir, "bright_green")
+    console.kv("evaluation jobs", jobs, "bright_yellow")
 
     result_file = os.path.join(out_dir, "results.json")
     constraints_file = os.path.join(out_dir, "samples_with_constraints.json")
+    context_file = os.path.join(context_dir, f"{repo_name}.json")
     if args.reuse_results and os.path.exists(result_file):
+        cached_samples = []
+        if os.path.exists(context_file):
+            console.section("Retrieve Context")
+            with open(context_file, "r", encoding="utf-8") as f:
+                cached_samples = json.load(f)
+            console.success("Context loaded from cache.")
+            print_context_inventory(console, cached_samples)
         if os.path.exists(constraints_file):
+            console.section("Decompose Safety")
             with open(constraints_file, "r", encoding="utf-8") as f:
-                print_encapsulation_inventory(console, json.load(f))
+                cached_samples = json.load(f)
+            console.success("Constraints loaded from cache.")
+            print_encapsulation_inventory(console, cached_samples, title=None)
         with open(result_file, "r", encoding="utf-8") as f:
             cached_results = json.load(f)
         summary = summarize_results(cached_results)
         unsound_results = [result for result in cached_results if result.get("result") == "unsound"]
-        print_summary(console, summary, result_file, unsound_results, 0.0)
+        sample_by_label = {sample.get("sample_label"): sample for sample in cached_samples}
+        print_summary(console, summary, result_file, unsound_results, 0.0, sample_by_label=sample_by_label)
         return 0
 
     console.section("Extract Candidates")
@@ -365,7 +761,6 @@ def main() -> int:
         json.dump(candidates, safe_open(candidate_file, "w"), indent=2)
     console.success(f"Detected {len(candidates)} public safe encapsulation candidates.")
 
-    context_file = os.path.join(context_dir, f"{repo_name}.json")
     if args.force_context or not os.path.exists(context_file):
         repo_root_path = os.path.dirname(crate_root)
         console.section("Retrieve Context")
@@ -385,6 +780,7 @@ def main() -> int:
 
     with open(context_file, "r", encoding="utf-8") as f:
         samples = json.load(f)
+    print_context_inventory(console, samples)
 
     request_timeout = float(env_config.get("request_timeout", 120))
     max_tokens = int(env_config.get("max_tokens", 4096))
@@ -396,6 +792,21 @@ def main() -> int:
         max_tokens=max_tokens,
         extra_body=chat_extra_body(env_config, model),
     )
+
+    def model_event(event: str, payload: dict) -> None:
+        if event == "start":
+            console.model_start(payload["task"], payload["input_tokens"], payload["max_tokens"])
+        elif event == "done":
+            console.model_done(
+                payload["task"],
+                payload["prompt_tokens"],
+                payload["completion_tokens"],
+                payload["total_tokens"],
+                payload["elapsed"],
+                payload["aggregate_total"],
+            )
+
+    chatbot.set_event_callback(model_event)
     decomposer = make_decomposer(chatbot, decompose_prompt)
     if args.force_decompose or not os.path.exists(constraints_file):
         console.section("Decompose Safety")
@@ -413,13 +824,13 @@ def main() -> int:
             return 1
         json.dump(samples, safe_open(constraints_file, "w"), indent=2)
         console.success("Constraints ready.")
+        print_encapsulation_inventory(console, samples, title=None)
     else:
         console.section("Decompose Safety")
         with open(constraints_file, "r", encoding="utf-8") as f:
             samples = json.load(f)
-        console.success("Constraints ready.")
-
-    print_encapsulation_inventory(console, samples)
+        console.success("Constraints loaded from cache.")
+        print_encapsulation_inventory(console, samples, title=None)
 
     evaluator = InteractiveEvaluator(prompt_info, chatbot)
     console.section("Evaluate Encapsulations")
@@ -428,7 +839,12 @@ def main() -> int:
         console.progress("Checking samples", current, total, detail, done=current >= total)
 
     try:
-        results = evaluator.evaluate_samples(samples, progress=eval_progress, jobs=jobs)
+        results = evaluator.evaluate_samples(
+            samples,
+            progress=eval_progress,
+            finding_callback=console.finding,
+            jobs=jobs,
+        )
     except Exception as exc:
         console.line()
         console.error(f"Evaluation failed while calling the model: {exc}")
@@ -438,7 +854,16 @@ def main() -> int:
 
     summary = summarize_results(results)
     unsound_results = [result for result in results if result.get("result") == "unsound"]
-    print_summary(console, summary, result_file, unsound_results, time.time() - start_time)
+    sample_by_label = {sample.get("sample_label"): sample for sample in samples}
+    print_summary(
+        console,
+        summary,
+        result_file,
+        unsound_results,
+        time.time() - start_time,
+        sample_by_label=sample_by_label,
+        token_stats=chatbot.token_stats(),
+    )
     return 0
 
 

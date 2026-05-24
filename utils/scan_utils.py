@@ -219,11 +219,18 @@ class InteractiveEvaluator:
         responses: List[dict] = []
         if self.fine_grained_check:
             for fine_grained_q in sample_raw.get("constraints", []):
+                callee_name = fine_grained_q.get("fn_name", "unsafe callee")
+                contract_type = fine_grained_q.get("type", "contract")
                 if self.one_pattern_a_time:
                     sub_responses = []
                     prompts = self.prompt_provider.get_prompts_for_one_pattern_a_time(sample, fine_grained_q)
                     q_result = "No"
-                    for messages in prompts:
+                    for prompt_idx, messages in enumerate(prompts, start=1):
+                        if hasattr(self.chatbot, "set_task"):
+                            self.chatbot.set_task(
+                                f"Evaluate `{sample.fn_name}` against `{callee_name}` "
+                                f"({contract_type}, pattern {prompt_idx}/{len(prompts)})"
+                            )
                         content = self.chatbot.send_messages(
                             messages, temperature=self.temperature, seed=self.seed
                         )
@@ -238,6 +245,10 @@ class InteractiveEvaluator:
                     )
                 else:
                     messages = self.prompt_provider.get_prompt(sample, fine_grained_q)
+                    if hasattr(self.chatbot, "set_task"):
+                        self.chatbot.set_task(
+                            f"Evaluate `{sample.fn_name}` against `{callee_name}` ({contract_type})"
+                        )
                     content = self.chatbot.send_messages(messages, temperature=self.temperature, seed=self.seed)
                     pred = extract_sample_result(content)
                     responses.append({"question": fine_grained_q, "result": pred, "response": content})
@@ -251,6 +262,7 @@ class InteractiveEvaluator:
                                 "sample_label": sample.sample_label,
                                 "sample_name": sample.fn_name,
                                 "question": fine_grained_q,
+                                "sample": sample_raw,
                             }
                         )
                 elif result == "sound" and q_result == "unknown":
@@ -267,6 +279,10 @@ class InteractiveEvaluator:
                         "type": "unknown",
                     },
                 )
+                if hasattr(self.chatbot, "set_task"):
+                    self.chatbot.set_task(
+                        f"Evaluate `{sample.fn_name}` against `{unsafe_callee['name']}` (full Safety section)"
+                    )
                 content = self.chatbot.send_messages(messages, temperature=self.temperature, seed=self.seed)
                 pred = extract_sample_result(content)
                 responses.append({"question": unsafe_callee["safety"], "result": pred, "response": content})
@@ -282,6 +298,7 @@ class InteractiveEvaluator:
                                     "fn_name": unsafe_callee["name"],
                                     "type": "unknown",
                                 },
+                                "sample": sample_raw,
                             }
                         )
                 elif result == "sound" and pred == "unknown":

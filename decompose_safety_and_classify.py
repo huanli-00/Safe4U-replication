@@ -54,7 +54,7 @@ class Refiner:
         self.refine_temperature = self.refine_prompt.get("temperature", 0)
         self.refine_seed = self.refine_prompt.get("seed", 2024)
 
-    def critique_and_refine(self, decomposed_contracts: str, fn_context: str):
+    def critique_and_refine(self, decomposed_contracts: str, fn_context: str, unsafe_fn_name: str = ""):
         round_cnt = 0
         log = []
         while round_cnt < self.round_limit:
@@ -64,6 +64,9 @@ class Refiner:
             llm.add_to_message(
                 messages, "user", self._fill_template(self.critique_template, fn_context, decomposed_contracts, "")
             )
+            if hasattr(self.chatbot, "set_task"):
+                suffix = f" for `{unsafe_fn_name}`" if unsafe_fn_name else ""
+                self.chatbot.set_task(f"Critique decomposed safety contracts{suffix}")
             critique = self.chatbot.send_messages(messages, temperature=self.critique_temperature, seed=self.critique_seed)
             logging.debug(f"Critique: {critique}")
             log.append({"role": "critique", "content": critique})
@@ -76,6 +79,9 @@ class Refiner:
             llm.add_to_message(
                 messages, "user", self._fill_template(self.refine_template, fn_context, decomposed_contracts, "")
             )
+            if hasattr(self.chatbot, "set_task"):
+                suffix = f" for `{unsafe_fn_name}`" if unsafe_fn_name else ""
+                self.chatbot.set_task(f"Refine decomposed safety contracts{suffix}")
             decomposed_contracts = self.chatbot.send_messages(
                 messages, temperature=self.refine_temperature, seed=self.refine_seed
             )
@@ -129,6 +135,8 @@ class Classifier:
         messages = self.messages.copy()
         query = self._fill_in_unsafe_fn_into_template(self.question_template, unsafe_fn, self_info)
         llm.add_to_message(messages, "user", query)
+        if hasattr(self.chatbot, "set_task"):
+            self.chatbot.set_task(f"Classify safety contracts for `{unsafe_fn['name']}`")
         classification = self.chatbot.send_messages(messages, temperature=self.temperature, seed=self.seed)
         logging.debug(f"Classification: {classification}")
         return classification
@@ -187,12 +195,16 @@ class Decomposer:
         messages = self.messages.copy()
         question_with_context = self._fill_in_unsafe_fn_into_template(self.question_template, unsafe_fn, self_info)
         llm.add_to_message(messages, "user", question_with_context)
+        if hasattr(self.chatbot, "set_task"):
+            self.chatbot.set_task(f"Decompose safety contracts for `{unsafe_fn['name']}`")
         decomposed_contracts = self.chatbot.send_messages(messages, temperature=self.temperature, seed=self.seed)
         logging.debug(f"Decomposed contracts: {decomposed_contracts}")
         log = [{"role": "decompose", "content": decomposed_contracts}]
         if self.self_check:
             fn_context = construct_fn_context(unsafe_fn, self_info)
-            decomposed_contracts, refine_log = self.refiner.critique_and_refine(decomposed_contracts, fn_context)
+            decomposed_contracts, refine_log = self.refiner.critique_and_refine(
+                decomposed_contracts, fn_context, unsafe_fn["name"]
+            )
             log.extend(refine_log)
         if self.classification_strategy != "simultaneous":
             unsafe_fn["decomposed_contracts"] = decomposed_contracts
