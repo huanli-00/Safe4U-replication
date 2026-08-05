@@ -16,3 +16,9 @@ The detail of unsound functions in `crates.io` found by Safe4U.
 | sqlite3-parser | [`keyword_token`](https://github.com/gwenn/lemon-rs/blob/d84499d43966b4684107756f0d4fe3372e2b2ab9/src/dialect/mod.rs#L70) |  |
 | starbase_utils | [`write_file_with_config`](https://github.com/moonrepo/starbase/blob/9e4e07ce2ae0014a5855551fe7413ea586e3bf8b/crates/utils/src/fs.rs#L752) |  |
 | rust-toolbox | [`binary_write_from_ref`](https://github.com/10XGenomics/rust-toolbox/blob/6856c585a918e183fc4b3bd902b9e4f22e1f3d5f/binary_vec_io/src/lib.rs#L30) |  |
+
+> These unsound functions represent cases manually confirmed by paper authors rather than maintainers.
+
+> Unsound functions of `sqlite3-parser`, `starbase_utils`, and `rust-toolbox` are not submitted as issue reports deliberately since these crates were in rapid development or have been archived.
+
+> There is a special false positive in [`scanner-rust`](https://github.com/magiclen/scanner-rust/issues/2): we did not count it due to our insufficient confidence in that case, but we still created the report since the disputed function is crucial to the crate and deserve additional checks.
